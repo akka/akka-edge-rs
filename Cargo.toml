@@ -1,0 +1,10 @@
+[workspace]
+
+members = ["akka-persistence-rs"]
+
+[workspace.dependencies]
+async-trait = "0.1.72"
+env_logger = "0.10.0"
+test-log = "0.2.11"
+tokio = "1.23.0"
+tokio-stream = "0.1.14"

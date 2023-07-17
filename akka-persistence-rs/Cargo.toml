@@ -1,0 +1,19 @@
+[package]
+name = "akka-persistence-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = { workspace = true }
+tokio = { workspace = true, features = [
+    "sync",
+    "macros",
+    "io-util",
+    "rt",
+    "time",
+] }
+tokio-stream = { workspace = true }
+
+[dev-dependencies]
+env_logger = { workspace = true }
+test-log = { workspace = true }
