@@ -128,10 +128,6 @@ where
     // back-pressuring the sender.
     const MAX_STREAM_CAPACITY: usize = 10;
 
-    // Max number of event records we can enqueue having applied an effect
-    // before back-pressuring the sender.
-    const MAX_RECORD_CAPACITY: usize = 10;
-
     /// Establish a new entity manager with capacity for a number of instances
     /// active at a time. This capacity is not a limit and memory can grow to
     /// accommodate more instances. However, dimensioning capacity in accordance
@@ -166,43 +162,24 @@ where
                 Self::update_entity(&mut entities, &record);
             }
 
-            // Create a channel we can use to apply event records upon
-            // an effect having been processed.
-
-            let (record_sender, mut record_receiver) = mpsc::channel(Self::MAX_RECORD_CAPACITY);
-
             // Receive commands for the entities and process them.
 
-            loop {
-                tokio::select! {
-                    // Process commands from the outside.
+            while let Some(message) = receiver.recv().await {
+                // Given an entity, send it the command, possibly producing an effect.
 
-                    Some(message) = receiver.recv() => {
-                        // Given an entity, send it the command, possibly producing an effect.
+                let context = Context {
+                    entity_id: message.entity_id.clone(),
+                };
+                let effect = behavior.for_command(
+                    &context,
+                    entities.get(&message.entity_id),
+                    message.command,
+                );
 
-                        let context = Context {
-                            entity_id: message.entity_id.clone(),
-                        };
-                        let state = entities.get(&message.entity_id);
-                        let effect = behavior.for_command(&context, state, message.command);
-
-                        if let Some(mut effect) = effect {
-                            let effect_task_record_sender = record_sender.clone();
-                            tokio::spawn(async move {
-                                if let Ok(Some(event)) = effect.take(Ok(None)).await {
-                                    let _ = effect_task_record_sender
-                                        .send(Record::new(context.entity_id, event))
-                                        .await;
-                                }
-                            });
-                        }
-                    }
-
-                    // Process event records from having processed command effects.
-
-                    Some(record) = record_receiver.recv() => {
+                if let Some(mut effect) = effect {
+                    if let Ok(Some(event)) = effect.take(Ok(None)).await {
+                        let record = Record::new(context.entity_id, event);
                         let entity_updated = Self::update_entity(&mut entities, &record);
-
                         if entity_updated {
                             // Emit our record to the outside world.
                             if stream_sender.send(record).await.is_err() {
@@ -211,8 +188,6 @@ where
                             }
                         }
                     }
-
-                    else => break,
                 }
             }
         });
