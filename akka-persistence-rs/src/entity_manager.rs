@@ -5,58 +5,18 @@
 //! entites to have a bounded number of entities in memory.
 //! The entities will recover their state from a stream of events.
 
-use std::pin::Pin;
-use std::task::{Context as StdContext, Poll};
 use std::{collections::HashMap, marker::PhantomData};
-use tokio::sync::mpsc;
 use tokio::sync::mpsc::Receiver;
-use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 
+use crate::entity::EventSourcedBehavior;
 use crate::entity::{Context, EntityOp};
-use crate::entity::{EntityId, EventSourcedBehavior};
+use crate::RecordSource;
+use crate::{EntityId, Message, Record, RecordFlow};
 
 /// The default amount of state (instances of an entity) that we
 /// retain at any one time.
 pub const DEFAULT_ACTIVE_STATE: usize = 1;
-
-/// A message encapsulates a command that is addressed to a specific entity.
-#[derive(Debug, PartialEq)]
-pub struct Message<C> {
-    entity_id: EntityId,
-    command: C,
-}
-
-impl<C> Message<C> {
-    pub fn new<EI>(entity_id: EI, command: C) -> Self
-    where
-        EI: Into<EntityId>,
-    {
-        Self {
-            entity_id: entity_id.into(),
-            command,
-        }
-    }
-}
-
-/// A record is an event associated with a specific entity.
-#[derive(Debug, PartialEq)]
-pub struct Record<E> {
-    entity_id: EntityId,
-    event: E,
-}
-
-impl<E> Record<E> {
-    pub fn new<EI>(entity_id: EI, event: E) -> Self
-    where
-        EI: Into<EntityId>,
-    {
-        Self {
-            entity_id: entity_id.into(),
-            event,
-        }
-    }
-}
 
 /// Manages the lifecycle of entities given a specific behavior.
 /// Entity managers are established given a source of events associated
@@ -73,7 +33,6 @@ pub struct EntityManager<B>
 where
     B: EventSourcedBehavior + Send,
 {
-    stream_receiver: mpsc::Receiver<Record<B::Event>>,
     phantom: PhantomData<B>,
 }
 
@@ -81,10 +40,7 @@ impl<B> EntityManager<B>
 where
     B: EventSourcedBehavior + Send + 'static,
 {
-    fn update_entity(
-        entities: &mut HashMap<EntityId, B::State>,
-        record: &Record<B::Event>,
-    ) -> bool {
+    fn update_entity(entities: &mut HashMap<EntityId, B::State>, record: &Record<B::Event>) {
         // Apply an event to state if we have an entity for it
         let context = Context {
             entity_id: record.entity_id.clone(),
@@ -93,14 +49,11 @@ where
         match B::on_event(&context, state, &record.event) {
             EntityOp::Create(new_state) => {
                 entities.insert(context.entity_id, new_state);
-                true
             }
-            EntityOp::Update => true,
             EntityOp::Delete => {
                 entities.remove(&record.entity_id);
-                true
             }
-            EntityOp::None => false,
+            EntityOp::Update | EntityOp::None => (),
         }
     }
 }
@@ -114,19 +67,21 @@ where
     ///
     /// A task will also be spawned to source events and process
     /// commands using the stream and receiver channel passed in.
-    pub fn new<S>(behavior: B, source: S, receiver: Receiver<Message<B::Command>>) -> Self
+    pub fn new<RF, RS>(
+        behavior: B,
+        source: RS,
+        flow: RF,
+        receiver: Receiver<Message<B::Command>>,
+    ) -> Self
     where
         B::Command: Send,
         B::Event: Send,
         B::State: Send,
-        S: Stream<Item = Record<B::Event>> + Send + 'static,
+        RS: RecordSource<B::Event> + Send + Sync + 'static,
+        RF: RecordFlow<B::Event> + Send + Sync + 'static,
     {
-        Self::with_capacity(behavior, source, receiver, DEFAULT_ACTIVE_STATE)
+        Self::with_capacity(behavior, source, flow, receiver, DEFAULT_ACTIVE_STATE)
     }
-
-    // Max number of event records we can enqueue for streaming out before
-    // back-pressuring the sender.
-    const MAX_STREAM_CAPACITY: usize = 10;
 
     /// Establish a new entity manager with capacity for a number of instances
     /// active at a time. This capacity is not a limit and memory can grow to
@@ -136,9 +91,10 @@ where
     ///
     /// A task will also be spawned to source events and process
     /// commands using the stream and receiver channel passed in.
-    pub fn with_capacity<S>(
+    pub fn with_capacity<RS, RF>(
         behavior: B,
-        source: S,
+        mut source: RS,
+        mut flow: RF,
         mut receiver: Receiver<Message<B::Command>>,
         capacity: usize,
     ) -> Self
@@ -146,25 +102,28 @@ where
         B::Command: Send,
         B::Event: Send,
         B::State: Send,
-        S: Stream<Item = Record<B::Event>> + Send + 'static,
+        RS: RecordSource<B::Event> + Send + Sync + 'static,
+        RF: RecordFlow<B::Event> + Send + Sync + 'static,
     {
-        // Create a channel that can be used to emit records using the
-        // entity manager as a stream source.
-        let (stream_sender, stream_receiver) = mpsc::channel(Self::MAX_STREAM_CAPACITY);
-
         tokio::spawn(async move {
             // Source our events and populate our internal entities map.
 
             let mut entities: HashMap<EntityId, B::State> = HashMap::with_capacity(capacity);
 
-            tokio::pin!(source);
-            while let Some(record) = source.next().await {
-                Self::update_entity(&mut entities, &record);
-            }
-
             // Receive commands for the entities and process them.
 
             while let Some(message) = receiver.recv().await {
+                // Source entity if we don't have it.
+
+                if !entities.contains_key(&message.entity_id) {
+                    if let Ok(records) = source.produce(&message.entity_id) {
+                        tokio::pin!(records);
+                        while let Some(record) = records.next().await {
+                            Self::update_entity(&mut entities, &record);
+                        }
+                    }
+                }
+
                 // Given an entity, send it the command, possibly producing an effect.
 
                 let context = Context {
@@ -177,55 +136,42 @@ where
                 );
 
                 if let Some(mut effect) = effect {
-                    if let Ok(Some(event)) = effect.take(Ok(None)).await {
-                        let record = Record::new(context.entity_id, event);
-                        let entity_updated = Self::update_entity(&mut entities, &record);
-                        if entity_updated {
-                            // Emit our record to the outside world.
-                            if stream_sender.send(record).await.is_err() {
-                                // All bets are off if we can't emit events.
-                                break;
-                            }
-                        }
+                    if let Ok(Some(record)) =
+                        effect.take(&mut flow, message.entity_id, Ok(None)).await
+                    {
+                        Self::update_entity(&mut entities, &record);
                     }
                 }
             }
         });
 
         Self {
-            stream_receiver,
             phantom: PhantomData,
         }
     }
 }
 
-impl<B> Stream for EntityManager<B>
-where
-    B: EventSourcedBehavior + Send + 'static,
-{
-    type Item = Record<B::Event>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut StdContext<'_>) -> Poll<Option<Self::Item>> {
-        // Safety: we are making a promise to the compiler here that stream_receiver is
-        // not going to be mutated elsewhere. This works as there is only one consumer of
-        // this stream.
-        let mut stream_receiver =
-            unsafe { self.map_unchecked_mut(|this| &mut this.stream_receiver) };
-        stream_receiver.poll_recv(cx)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        io,
+        pin::Pin,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
     use super::*;
     use crate::{
         effect::{emit_event, reply, then, Effect, EffectExt},
         entity::{Context, EntityOp},
     };
+    use async_trait::async_trait;
     use test_log::test;
-    use tokio::sync::{mpsc, oneshot, Notify};
+    use tokio::{
+        sync::{mpsc, oneshot, Notify},
+        time,
+    };
+    use tokio_stream::Stream;
 
     // Declare an entity behavior. We do this by declaring state, commands, events and then the
     // behavior itself. For our example, we are going to share a notifier object with our
@@ -245,7 +191,7 @@ mod tests {
         UpdateTemperature { temp: u32 },
     }
 
-    #[derive(Debug, PartialEq)]
+    #[derive(Clone, Debug, PartialEq)]
     enum TempEvent {
         Deregistered,
         Registered,
@@ -312,6 +258,51 @@ mod tests {
         }
     }
 
+    // Create a source of records. Sources are used to provide
+    // the entity manager with records of events given an entity id. The
+    // contract permits for records not belonging to an entity id to be
+    // returned. This way, all records can be sourced at once, which is
+    // typically what we do at the edge i.e. all entities are brought into
+    // memory.
+    //
+    // For our tests, we produce our records from a vector provided during
+    // construction. We only expect to be called once. If we are called
+    // more than once then no records will be produced.
+    struct VecRecordSource {
+        records: Option<Vec<Record<TempEvent>>>,
+    }
+
+    impl RecordSource<TempEvent> for VecRecordSource {
+        fn produce(
+            &mut self,
+            _entity_id: &EntityId,
+        ) -> io::Result<Pin<Box<dyn Stream<Item = Record<TempEvent>> + Send>>> {
+            if let Some(records) = self.records.take() {
+                Ok(Box::pin(tokio_stream::iter(records)))
+            } else {
+                Ok(Box::pin(tokio_stream::empty()))
+            }
+        }
+    }
+
+    // Create a flow of records. Flows are used for the entity manager
+    // to push records through given an effect that emits events. The flow
+    // is generally used to persist an entity's events.
+    //
+    // For our tests, we record the records that have been pushed so we
+    // can check them later.
+    struct VecRecordFlow {
+        records: Arc<Mutex<Vec<Record<TempEvent>>>>,
+    }
+
+    #[async_trait]
+    impl RecordFlow<TempEvent> for VecRecordFlow {
+        async fn process(&mut self, record: Record<TempEvent>) -> io::Result<Record<TempEvent>> {
+            self.records.lock().unwrap().push(record.clone());
+            Ok(record)
+        }
+    }
+
     // We now set up and run the entity manager, send a few commands, and consume a
     // few events.
 
@@ -325,16 +316,24 @@ mod tests {
             updated: temp_sensor_updated.clone(),
         };
 
-        let temp_sensor_events = tokio_stream::iter(vec![
-            Record::new("id-1", TempEvent::Registered),
-            Record::new("id-1", TempEvent::TemperatureUpdated { temp: 10 }),
-        ]);
+        let temp_sensor_source = VecRecordSource {
+            records: Some(vec![
+                Record::new("id-1", TempEvent::Registered),
+                Record::new("id-1", TempEvent::TemperatureUpdated { temp: 10 }),
+            ]),
+        };
+
+        let temp_sensor_events = Arc::new(Mutex::new(Vec::with_capacity(4)));
+        let temp_sensor_flow = VecRecordFlow {
+            records: temp_sensor_events.clone(),
+        };
 
         let (temp_sensor, temp_sensor_receiver) = mpsc::channel::<Message<TempCommand>>(10);
 
-        let mut entity_manager = EntityManager::new(
+        EntityManager::new(
             temp_sensor_behavior,
-            temp_sensor_events,
+            temp_sensor_source,
+            temp_sensor_flow,
             temp_sensor_receiver,
         );
 
@@ -392,22 +391,47 @@ mod tests {
         // consume more than four events given this use-case, then the program would
         // run forever as we don't produce a fifth event.
 
-        assert_eq!(
-            entity_manager.next().await.unwrap(),
-            Record::new("id-1", TempEvent::TemperatureUpdated { temp: 32 })
-        );
+        let mut wait_count = 0;
 
-        assert_eq!(
-            entity_manager.next().await.unwrap(),
-            Record::new("id-1", TempEvent::TemperatureUpdated { temp: 64 })
-        );
-        assert_eq!(
-            entity_manager.next().await.unwrap(),
-            Record::new("id-1", TempEvent::Deregistered)
-        );
-        assert_eq!(
-            entity_manager.next().await.unwrap(),
-            Record::new("id-2", TempEvent::Registered)
-        );
+        while wait_count < 10 {
+            let (temp_sensor_events_len, temp_sensor_events) = {
+                let guarded_temp_sensor_events = temp_sensor_events.lock().unwrap();
+                (
+                    guarded_temp_sensor_events.len(),
+                    guarded_temp_sensor_events.clone(),
+                )
+            };
+
+            match temp_sensor_events_len.cmp(&4) {
+                std::cmp::Ordering::Less => {
+                    wait_count += 1;
+                    time::sleep(Duration::from_millis(100)).await;
+                }
+
+                std::cmp::Ordering::Equal => {
+                    let mut temp_sensor_events_iter = temp_sensor_events.iter();
+
+                    assert_eq!(
+                        temp_sensor_events_iter.next().unwrap(),
+                        &Record::new("id-1", TempEvent::TemperatureUpdated { temp: 32 })
+                    );
+                    assert_eq!(
+                        temp_sensor_events_iter.next().unwrap(),
+                        &Record::new("id-1", TempEvent::TemperatureUpdated { temp: 64 })
+                    );
+                    assert_eq!(
+                        temp_sensor_events_iter.next().unwrap(),
+                        &Record::new("id-1", TempEvent::Deregistered)
+                    );
+                    assert_eq!(
+                        temp_sensor_events_iter.next().unwrap(),
+                        &Record::new("id-2", TempEvent::Registered)
+                    );
+                    break;
+                }
+
+                std::cmp::Ordering::Greater => panic!("Too many events"),
+            }
+        }
     }
 }

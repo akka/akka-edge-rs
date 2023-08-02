@@ -8,9 +8,7 @@
 //! as query commands for example.
 
 use crate::effect::Effect;
-
-/// Uniquely identifies an entity, or entity instance.
-pub type EntityId = String;
+use crate::EntityId;
 
 /// A context provides information about the environment that hosts a specific entity.
 pub struct Context {

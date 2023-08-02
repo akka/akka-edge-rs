@@ -1,15 +1,19 @@
 //! Effects that are lazily performed as a result of performing a command
 //! of an entity. Effects can be chained with other effects.
 
-use std::{future::Future, marker::PhantomData};
+use std::{future::Future, io, marker::PhantomData};
 
 use async_trait::async_trait;
 use tokio::sync::oneshot;
 
-/// Errors that can occur when applying effects.
-pub struct Error;
+use crate::{EntityId, Record, RecordFlow};
 
-pub type Result<E> = std::result::Result<Option<E>, Error>;
+/// Errors that can occur when applying effects.
+pub enum Error {
+    IoError(io::Error),
+}
+
+pub type Result<E> = std::result::Result<Option<Record<E>>, Error>;
 
 /// The trait that effect types implement.
 #[async_trait]
@@ -17,7 +21,12 @@ pub trait Effect<E: Send>: Send {
     /// Consume the effect asynchronously. This operation may
     /// be performed multiple times, but only the first time
     /// is expected to perform the effect.
-    async fn take(&mut self, prev_result: Result<E>) -> Result<E>;
+    async fn take(
+        &mut self,
+        flow: &mut (dyn RecordFlow<E> + Send + Sync),
+        entity_id: EntityId,
+        prev_result: Result<E>,
+    ) -> Result<E>;
 }
 
 /// An effect to chain one effect with another.
@@ -34,10 +43,15 @@ where
     L: Effect<E> + Sync,
     R: Effect<E> + Sync,
 {
-    async fn take(&mut self, prev_result: Result<E>) -> Result<E> {
-        let r = self._l.take(prev_result).await;
+    async fn take(
+        &mut self,
+        flow: &mut (dyn RecordFlow<E> + Send + Sync),
+        entity_id: EntityId,
+        prev_result: Result<E>,
+    ) -> Result<E> {
+        let r = self._l.take(flow, entity_id.clone(), prev_result).await;
         if r.is_ok() {
-            self._r.take(r).await
+            self._r.take(flow, entity_id, r).await
         } else {
             r
         }
@@ -90,8 +104,22 @@ impl<E> Effect<E> for EmitEvent<E>
 where
     E: Send + Sync,
 {
-    async fn take(&mut self, prev_result: Result<E>) -> Result<E> {
-        prev_result.map(|_| self.event.take())
+    async fn take(
+        &mut self,
+        flow: &mut (dyn RecordFlow<E> + Send + Sync),
+        entity_id: EntityId,
+        prev_result: Result<E>,
+    ) -> Result<E> {
+        if prev_result.is_ok() {
+            if let Some(event) = self.event.take() {
+                let record = Record::new(entity_id, event);
+                flow.process(record).await.map(Some).map_err(Error::IoError)
+            } else {
+                prev_result
+            }
+        } else {
+            prev_result
+        }
     }
 }
 
@@ -116,7 +144,12 @@ where
     E: Send + Sync,
     T: Send,
 {
-    async fn take(&mut self, prev_result: Result<E>) -> Result<E> {
+    async fn take(
+        &mut self,
+        _flow: &mut (dyn RecordFlow<E> + Send + Sync),
+        _entity_id: EntityId,
+        prev_result: Result<E>,
+    ) -> Result<E> {
         if prev_result.is_ok() {
             if let Some((reply_to, reply)) = self.replier.take() {
                 // Reply is best-effort
@@ -156,7 +189,12 @@ where
     F: FnOnce(Result<E>) -> R + Send + Sync,
     R: Future<Output = Result<E>> + Send,
 {
-    async fn take(&mut self, prev_result: Result<E>) -> Result<E> {
+    async fn take(
+        &mut self,
+        _flow: &mut (dyn RecordFlow<E> + Send + Sync),
+        _entity_id: EntityId,
+        prev_result: Result<E>,
+    ) -> Result<E> {
         let f = self.f.take();
         if let Some(f) = f {
             f(prev_result).await
