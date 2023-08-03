@@ -9,8 +9,8 @@ use std::{collections::HashMap, marker::PhantomData};
 use tokio::sync::mpsc::Receiver;
 use tokio_stream::StreamExt;
 
+use crate::entity::Context;
 use crate::entity::EventSourcedBehavior;
-use crate::entity::{Context, EntityOp};
 use crate::RecordSource;
 use crate::{EntityId, Message, Record, RecordFlow};
 
@@ -40,20 +40,21 @@ impl<B> EntityManager<B>
 where
     B: EventSourcedBehavior + Send + 'static,
 {
-    fn update_entity(entities: &mut HashMap<EntityId, B::State>, record: &Record<B::Event>) {
-        // Apply an event to state if we have an entity for it
-        let context = Context {
-            entity_id: record.entity_id.clone(),
-        };
-        let state = entities.get_mut(&record.entity_id);
-        match B::on_event(&context, state, &record.event) {
-            EntityOp::Create(new_state) => {
-                entities.insert(context.entity_id, new_state);
-            }
-            EntityOp::Delete => {
-                entities.remove(&record.entity_id);
-            }
-            EntityOp::Update | EntityOp::None => (),
+    fn update_entity(entities: &mut HashMap<EntityId, B::State>, record: &Record<B::Event>)
+    where
+        B::State: Default,
+    {
+        if !record.metadata.deletion_event {
+            // Apply an event to state, creating the entity entry if necessary.
+            let context = Context {
+                entity_id: record.entity_id.clone(),
+            };
+            let state = entities
+                .entry(record.entity_id.clone())
+                .or_insert_with(B::State::default);
+            B::on_event(&context, state, &record.event);
+        } else {
+            entities.remove(&record.entity_id);
         }
     }
 }
@@ -159,8 +160,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        effect::{emit_event, reply, then, unhandled, Effect, EffectExt},
-        entity::{Context, EntityOp},
+        effect::{emit_deletion_event, emit_event, reply, then, unhandled, Effect, EffectExt},
+        entity::Context,
     };
     use async_trait::async_trait;
     use test_log::test;
@@ -215,7 +216,9 @@ mod tests {
             match (state, command) {
                 (None, TempCommand::Register) => emit_event(TempEvent::Registered).boxed(),
 
-                (Some(_), TempCommand::Deregister) => emit_event(TempEvent::Deregistered).boxed(),
+                (Some(_), TempCommand::Deregister) => {
+                    emit_deletion_event(TempEvent::Deregistered).boxed()
+                }
 
                 (Some(state), TempCommand::GetTemperature { reply_to }) => {
                     reply(reply_to, state.temp).boxed()
@@ -238,19 +241,9 @@ mod tests {
             }
         }
 
-        fn on_event(
-            _context: &Context,
-            state: Option<&mut Self::State>,
-            event: &Self::Event,
-        ) -> EntityOp<Self::State> {
-            match (state, event) {
-                (None, TempEvent::Registered) => EntityOp::Create(TempState::default()),
-                (Some(_), TempEvent::Deregistered) => EntityOp::Delete,
-                (Some(state), TempEvent::TemperatureUpdated { temp }) => {
-                    state.temp = *temp;
-                    EntityOp::Update
-                }
-                _ => EntityOp::None,
+        fn on_event(_context: &Context, state: &mut Self::State, event: &Self::Event) {
+            if let TempEvent::TemperatureUpdated { temp } = event {
+                state.temp = *temp;
             }
         }
     }
@@ -418,7 +411,13 @@ mod tests {
                     );
                     assert_eq!(
                         temp_sensor_events_iter.next().unwrap(),
-                        &Record::new("id-1", TempEvent::Deregistered)
+                        &Record {
+                            entity_id: "id-1".to_string(),
+                            event: TempEvent::Deregistered,
+                            metadata: crate::RecordMetadata {
+                                deletion_event: true
+                            }
+                        }
                     );
                     assert_eq!(
                         temp_sensor_events_iter.next().unwrap(),

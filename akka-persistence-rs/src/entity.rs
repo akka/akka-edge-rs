@@ -16,14 +16,6 @@ pub struct Context {
     pub entity_id: EntityId,
 }
 
-/// Declares the various operations relate to the management of an entity instance.
-pub enum EntityOp<S> {
-    Create(S),
-    Update,
-    Delete,
-    None,
-}
-
 /// An entity's behavior is the basic unit of modelling aspects of an Akka-Persistence-based application and
 /// encapsulates how commands can be applied to state, including the emission of events. Events can
 /// also be applied to state in order to produce more state.
@@ -50,13 +42,5 @@ pub trait EventSourcedBehavior {
     /// Given a state and event, modify state, which could indicate transition to
     /// the next state. No side effects are to be performed. Can be used to replay
     /// events to attain a new state i.e. the major function of event sourcing.
-    ///
-    /// An operation is returned that describes the relationship of applying an
-    /// effect to an entity's state e.g. whether a entity is to be updated, created or
-    /// deleted.
-    fn on_event(
-        context: &Context,
-        state: Option<&mut Self::State>,
-        event: &Self::Event,
-    ) -> EntityOp<Self::State>;
+    fn on_event(context: &Context, state: &mut Self::State, event: &Self::Event);
 }

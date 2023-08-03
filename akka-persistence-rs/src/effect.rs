@@ -96,6 +96,7 @@ where
 // EmitEvent
 
 pub struct EmitEvent<E> {
+    deletion_event: bool,
     event: Option<E>,
 }
 
@@ -112,7 +113,13 @@ where
     ) -> Result<E> {
         if prev_result.is_ok() {
             if let Some(event) = self.event.take() {
-                let record = Record::new(entity_id, event);
+                let record = Record {
+                    entity_id,
+                    event,
+                    metadata: crate::RecordMetadata {
+                        deletion_event: self.deletion_event,
+                    },
+                };
                 flow.process(record).await.map(Some).map_err(Error::IoError)
             } else {
                 prev_result
@@ -128,7 +135,22 @@ impl<E> EffectExt<E> for EmitEvent<E> where E: Send + Sync {}
 /// An effect to emit an event upon having successfully handed it off to
 /// be persisted.
 pub fn emit_event<E>(event: E) -> EmitEvent<E> {
-    EmitEvent { event: Some(event) }
+    EmitEvent {
+        deletion_event: false,
+        event: Some(event),
+    }
+}
+
+// EmitDeletionEvent
+
+/// An effect to emit an event upon having successfully handed it off to
+/// be persisted. The event will be flagged to represent the deletion of
+/// an entity instance.
+pub fn emit_deletion_event<E>(event: E) -> EmitEvent<E> {
+    EmitEvent {
+        deletion_event: true,
+        event: Some(event),
+    }
 }
 
 // Reply

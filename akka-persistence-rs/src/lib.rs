@@ -15,8 +15,8 @@ pub type EntityId = String;
 /// A message encapsulates a command that is addressed to a specific entity.
 #[derive(Debug, PartialEq)]
 pub struct Message<C> {
-    entity_id: EntityId,
-    command: C,
+    pub entity_id: EntityId,
+    pub command: C,
 }
 
 impl<C> Message<C> {
@@ -31,11 +31,20 @@ impl<C> Message<C> {
     }
 }
 
+/// Additional information associated with a record.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecordMetadata {
+    /// Flags whether the associated event is to be considered
+    /// as one that represents an entity instance being deleted.
+    pub deletion_event: bool,
+}
+
 /// A record is an event associated with a specific entity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record<E> {
-    entity_id: EntityId,
-    event: E,
+    pub entity_id: EntityId,
+    pub event: E,
+    pub metadata: RecordMetadata,
 }
 
 impl<E> Record<E> {
@@ -46,6 +55,9 @@ impl<E> Record<E> {
         Self {
             entity_id: entity_id.into(),
             event,
+            metadata: RecordMetadata {
+                deletion_event: false,
+            },
         }
     }
 }
