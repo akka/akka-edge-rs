@@ -85,11 +85,11 @@ where
     }
 
     /// Box the effect for the purposes of returning it.
-    fn build(self) -> Option<Box<dyn Effect<E>>>
+    fn boxed(self) -> Box<dyn Effect<E>>
     where
         Self: Sized + 'static,
     {
-        Some(Box::new(self))
+        Box::new(self)
     }
 }
 
@@ -222,4 +222,31 @@ where
         f: Some(f),
         phantom: PhantomData,
     }
+}
+// Unhandled
+
+pub struct Unhandled<E> {
+    phantom: PhantomData<E>,
+}
+
+#[async_trait]
+impl<E> Effect<E> for Unhandled<E>
+where
+    E: Send + Sync,
+{
+    async fn take(
+        &mut self,
+        _flow: &mut (dyn RecordFlow<E> + Send + Sync),
+        _entity_id: EntityId,
+        _prev_result: Result<E>,
+    ) -> Result<E> {
+        Ok(None)
+    }
+}
+
+/// An unhandled command producing no effect
+pub fn unhandled<E>() -> Box<Unhandled<E>> {
+    Box::new(Unhandled {
+        phantom: PhantomData,
+    })
 }

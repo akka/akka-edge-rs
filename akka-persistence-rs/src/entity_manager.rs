@@ -129,18 +129,15 @@ where
                 let context = Context {
                     entity_id: message.entity_id.clone(),
                 };
-                let effect = behavior.for_command(
+                let mut effect = behavior.for_command(
                     &context,
                     entities.get(&message.entity_id),
                     message.command,
                 );
 
-                if let Some(mut effect) = effect {
-                    if let Ok(Some(record)) =
-                        effect.take(&mut flow, message.entity_id, Ok(None)).await
-                    {
-                        Self::update_entity(&mut entities, &record);
-                    }
+                if let Ok(Some(record)) = effect.take(&mut flow, message.entity_id, Ok(None)).await
+                {
+                    Self::update_entity(&mut entities, &record);
                 }
             }
         });
@@ -162,7 +159,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        effect::{emit_event, reply, then, Effect, EffectExt},
+        effect::{emit_event, reply, then, unhandled, Effect, EffectExt},
         entity::{Context, EntityOp},
     };
     use async_trait::async_trait;
@@ -214,14 +211,14 @@ mod tests {
             _context: &Context,
             state: Option<&Self::State>,
             command: Self::Command,
-        ) -> Option<Box<dyn Effect<Self::Event>>> {
+        ) -> Box<dyn Effect<Self::Event>> {
             match (state, command) {
-                (None, TempCommand::Register) => emit_event(TempEvent::Registered).build(),
+                (None, TempCommand::Register) => emit_event(TempEvent::Registered).boxed(),
 
-                (Some(_), TempCommand::Deregister) => emit_event(TempEvent::Deregistered).build(),
+                (Some(_), TempCommand::Deregister) => emit_event(TempEvent::Deregistered).boxed(),
 
                 (Some(state), TempCommand::GetTemperature { reply_to }) => {
-                    reply(reply_to, state.temp).build()
+                    reply(reply_to, state.temp).boxed()
                 }
 
                 (Some(_state), TempCommand::UpdateTemperature { temp }) => {
@@ -234,10 +231,10 @@ mod tests {
                             }
                             prev_result
                         }))
-                        .build()
+                        .boxed()
                 }
 
-                _ => None,
+                _ => unhandled(),
             }
         }
 

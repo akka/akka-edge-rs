@@ -45,7 +45,7 @@ pub trait EventSourcedBehavior {
         context: &Context,
         state: Option<&Self::State>,
         command: Self::Command,
-    ) -> Option<Box<dyn Effect<Self::Event>>>;
+    ) -> Box<dyn Effect<Self::Event>>;
 
     /// Given a state and event, modify state, which could indicate transition to
     /// the next state. No side effects are to be performed. Can be used to replay
