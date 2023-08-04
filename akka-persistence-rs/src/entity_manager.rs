@@ -40,7 +40,7 @@ impl<B> EntityManager<B>
 where
     B: EventSourcedBehavior + Send + 'static,
 {
-    fn update_entity(entities: &mut HashMap<EntityId, B::State>, record: &Record<B::Event>)
+    fn update_entity(entities: &mut HashMap<EntityId, B::State>, record: Record<B::Event>)
     where
         B::State: Default,
     {
@@ -50,7 +50,7 @@ where
                 entity_id: record.entity_id.clone(),
             };
             let state = entities
-                .entry(record.entity_id.clone())
+                .entry(record.entity_id)
                 .or_insert_with(B::State::default);
             B::on_event(&context, state, &record.event);
         } else {
@@ -77,7 +77,7 @@ where
     where
         B::Command: Send,
         B::Event: Send,
-        B::State: Send,
+        B::State: Send + Sync,
         RS: RecordSource<B::Event> + Send + Sync + 'static,
         RF: RecordFlow<B::Event> + Send + Sync + 'static,
     {
@@ -102,7 +102,7 @@ where
     where
         B::Command: Send,
         B::Event: Send,
-        B::State: Send,
+        B::State: Send + Sync,
         RS: RecordSource<B::Event> + Send + Sync + 'static,
         RF: RecordFlow<B::Event> + Send + Sync + 'static,
     {
@@ -120,12 +120,13 @@ where
                     if let Ok(records) = source.produce(&message.entity_id) {
                         tokio::pin!(records);
                         while let Some(record) = records.next().await {
-                            Self::update_entity(&mut entities, &record);
+                            Self::update_entity(&mut entities, record);
                         }
                     }
                 }
 
                 // Given an entity, send it the command, possibly producing an effect.
+                // Effects may emit events that will update state on success.
 
                 let context = Context {
                     entity_id: message.entity_id.clone(),
@@ -135,11 +136,11 @@ where
                     entities.get(&message.entity_id),
                     message.command,
                 );
-
-                if let Ok(Some(record)) = effect.take(&mut flow, message.entity_id, Ok(None)).await
-                {
-                    Self::update_entity(&mut entities, &record);
-                }
+                let _ = effect
+                    .process(&mut flow, message.entity_id, Ok(()), &mut |record| {
+                        Self::update_entity(&mut entities, record)
+                    })
+                    .await;
             }
         });
 
@@ -196,11 +197,11 @@ mod tests {
         TemperatureUpdated { temp: u32 },
     }
 
-    struct TempSensor {
+    struct TempSensorBehavior {
         updated: Arc<Notify>,
     }
 
-    impl EventSourcedBehavior for TempSensor {
+    impl EventSourcedBehavior for TempSensorBehavior {
         type State = TempState;
 
         type Command = TempCommand;
@@ -302,7 +303,7 @@ mod tests {
 
         let temp_sensor_updated = Arc::new(Notify::new());
 
-        let temp_sensor_behavior = TempSensor {
+        let temp_sensor_behavior = TempSensorBehavior {
             updated: temp_sensor_updated.clone(),
         };
 
