@@ -33,11 +33,10 @@ pub trait EventSourcedBehavior {
     /// performed. For example, a behavior might be created with a channel sender
     /// so that data can be sent as an effect of performing a command.
     fn for_command(
-        &self,
         context: &Context,
         state: Option<&Self::State>,
         command: Self::Command,
-    ) -> Box<dyn Effect<Self::Event>>;
+    ) -> Box<dyn Effect<Self>>;
 
     /// Given a state and event, modify state, which could indicate transition to
     /// the next state. No side effects are to be performed. Can be used to replay

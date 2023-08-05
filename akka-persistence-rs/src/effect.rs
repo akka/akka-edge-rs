@@ -6,7 +6,7 @@ use std::{future::Future, io, marker::PhantomData};
 use async_trait::async_trait;
 use tokio::sync::oneshot;
 
-use crate::{EntityId, Record, RecordFlow};
+use crate::{entity::EventSourcedBehavior, EntityId, Record, RecordFlow};
 
 /// Errors that can occur when applying effects.
 pub enum Error {
@@ -17,16 +17,20 @@ pub type Result = std::result::Result<(), Error>;
 
 /// The trait that effect types implement.
 #[async_trait]
-pub trait Effect<E: Send>: Send {
+pub trait Effect<B>: Send
+where
+    B: EventSourcedBehavior + Send + Sync + 'static,
+{
     /// Consume the effect asynchronously. This operation may
     /// be performed multiple times, but only the first time
     /// is expected to perform the effect.
     async fn process(
         &mut self,
-        flow: &mut (dyn RecordFlow<E> + Send + Sync),
+        behavior: &B,
+        flow: &mut (dyn RecordFlow<B::Event> + Send),
         entity_id: EntityId,
         prev_result: Result,
-        update_entity: &mut (dyn FnMut(Record<E>) + Send + Sync),
+        update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
     ) -> Result;
 }
 
@@ -38,49 +42,58 @@ pub struct And<E, L, R> {
 }
 
 #[async_trait]
-impl<E, L, R> Effect<E> for And<E, L, R>
+impl<B, L, R> Effect<B> for And<B, L, R>
 where
-    E: Send + Sync,
-    L: Effect<E> + Sync,
-    R: Effect<E> + Sync,
+    B: EventSourcedBehavior + Send + Sync + 'static,
+    L: Effect<B>,
+    R: Effect<B>,
 {
     async fn process(
         &mut self,
-        flow: &mut (dyn RecordFlow<E> + Send + Sync),
+        behavior: &B,
+        flow: &mut (dyn RecordFlow<B::Event> + Send),
         entity_id: EntityId,
         prev_result: Result,
-        update_entity: &mut (dyn FnMut(Record<E>) + Send + Sync),
+        update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
     ) -> Result {
         let r = self
             ._l
-            .process(flow, entity_id.clone(), prev_result, update_entity)
+            .process(
+                behavior,
+                flow,
+                entity_id.clone(),
+                prev_result,
+                update_entity,
+            )
             .await;
         if r.is_ok() {
-            self._r.process(flow, entity_id, r, update_entity).await
+            self._r
+                .process(behavior, flow, entity_id, r, update_entity)
+                .await
         } else {
             r
         }
     }
 }
 
-impl<E, L, R> EffectExt<E> for And<E, L, R>
+impl<B, L, R> EffectExt<B> for And<B, L, R>
 where
-    E: Send + Sync,
-    L: Effect<E> + Sync,
-    R: Effect<E> + Sync,
+    B: EventSourcedBehavior + Send + Sync + 'static,
+    L: Effect<B>,
+    R: Effect<B>,
 {
 }
 
 /// Combinators for use with effects.
-pub trait EffectExt<E>: Effect<E>
+pub trait EffectExt<B>: Effect<B>
 where
-    E: Send + Sync,
+    B: EventSourcedBehavior + Send + Sync + 'static,
 {
     /// Perform the provided effect after this current one.
-    fn and<R>(self, r: R) -> And<E, Self, R>
+    fn and<R>(self, r: R) -> And<B, Self, R>
     where
-        Self: Sized + Sync,
-        R: Effect<E> + Sync,
+        Self: Sized,
+        R: Effect<B>,
     {
         And {
             _l: self,
@@ -90,7 +103,7 @@ where
     }
 
     /// Box the effect for the purposes of returning it.
-    fn boxed(self) -> Box<dyn Effect<E>>
+    fn boxed(self) -> Box<dyn Effect<B>>
     where
         Self: Sized + 'static,
     {
@@ -100,22 +113,27 @@ where
 
 // EmitEvent
 
-pub struct EmitEvent<E> {
+pub struct EmitEvent<B>
+where
+    B: EventSourcedBehavior + Send + Sync + 'static,
+{
     deletion_event: bool,
-    event: Option<E>,
+    event: Option<B::Event>,
 }
 
 #[async_trait]
-impl<E> Effect<E> for EmitEvent<E>
+impl<B> Effect<B> for EmitEvent<B>
 where
-    E: Send + Sync,
+    B: EventSourcedBehavior + Send + Sync + 'static,
+    B::Event: Send,
 {
     async fn process(
         &mut self,
-        flow: &mut (dyn RecordFlow<E> + Send + Sync),
+        _behavior: &B,
+        flow: &mut (dyn RecordFlow<B::Event> + Send),
         entity_id: EntityId,
         prev_result: Result,
-        update_entity: &mut (dyn FnMut(Record<E>) + Send + Sync),
+        update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
     ) -> Result {
         if prev_result.is_ok() {
             if let Some(event) = self.event.take() {
@@ -142,11 +160,19 @@ where
     }
 }
 
-impl<E> EffectExt<E> for EmitEvent<E> where E: Send + Sync {}
+impl<B> EffectExt<B> for EmitEvent<B>
+where
+    B: EventSourcedBehavior + Send + Sync + 'static,
+    B::Event: Send,
+{
+}
 
 /// An effect to emit an event upon having successfully handed it off to
 /// be persisted.
-pub fn emit_event<E>(event: E) -> EmitEvent<E> {
+pub fn emit_event<B>(event: B::Event) -> EmitEvent<B>
+where
+    B: EventSourcedBehavior + Send + Sync + 'static,
+{
     EmitEvent {
         deletion_event: false,
         event: Some(event),
@@ -158,7 +184,10 @@ pub fn emit_event<E>(event: E) -> EmitEvent<E> {
 /// An effect to emit an event upon having successfully handed it off to
 /// be persisted. The event will be flagged to represent the deletion of
 /// an entity instance.
-pub fn emit_deletion_event<E>(event: E) -> EmitEvent<E> {
+pub fn emit_deletion_event<B>(event: B::Event) -> EmitEvent<B>
+where
+    B: EventSourcedBehavior + Send + Sync + 'static,
+{
     EmitEvent {
         deletion_event: true,
         event: Some(event),
@@ -167,23 +196,24 @@ pub fn emit_deletion_event<E>(event: E) -> EmitEvent<E> {
 
 // Reply
 
-pub struct Reply<E, T> {
+pub struct Reply<B, T> {
     replier: Option<(oneshot::Sender<T>, T)>,
-    phantom: PhantomData<E>,
+    phantom: PhantomData<B>,
 }
 
 #[async_trait]
-impl<E, T> Effect<E> for Reply<E, T>
+impl<B, T> Effect<B> for Reply<B, T>
 where
-    E: Send + Sync,
+    B: EventSourcedBehavior + Send + Sync + 'static,
     T: Send,
 {
     async fn process(
         &mut self,
-        _flow: &mut (dyn RecordFlow<E> + Send + Sync),
+        _behavior: &B,
+        _flow: &mut (dyn RecordFlow<B::Event> + Send),
         _entity_id: EntityId,
         prev_result: Result,
-        _update_entity: &mut (dyn FnMut(Record<E>) + Send + Sync),
+        _update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
     ) -> Result {
         if prev_result.is_ok() {
             if let Some((reply_to, reply)) = self.replier.take() {
@@ -195,16 +225,16 @@ where
     }
 }
 
-impl<E, T> EffectExt<E> for Reply<E, T>
+impl<B, T> EffectExt<B> for Reply<B, T>
 where
-    E: Send + Sync,
+    B: EventSourcedBehavior + Send + Sync + 'static,
     T: Send,
 {
 }
 
 /// An effect to reply a record if the previous effect completed
 /// successfully.
-pub fn reply<E, T>(reply_to: oneshot::Sender<T>, reply: T) -> Reply<E, T> {
+pub fn reply<B, T>(reply_to: oneshot::Sender<T>, reply: T) -> Reply<B, T> {
     Reply {
         replier: Some((reply_to, reply)),
         phantom: PhantomData,
@@ -213,46 +243,49 @@ pub fn reply<E, T>(reply_to: oneshot::Sender<T>, reply: T) -> Reply<E, T> {
 
 // Then
 
-pub struct Then<E, F, R> {
+pub struct Then<B, F, R> {
     f: Option<F>,
-    phantom: PhantomData<(E, R)>,
+    phantom: PhantomData<(B, R)>,
 }
 
 #[async_trait]
-impl<E, F, R> Effect<E> for Then<E, F, R>
+impl<B, F, R> Effect<B> for Then<B, F, R>
 where
-    E: Send + Sync,
-    F: FnOnce(Result) -> R + Send + Sync,
+    B: EventSourcedBehavior + Send + Sync + 'static,
+    F: FnOnce(&B, Result) -> R + Send,
     R: Future<Output = Result> + Send,
 {
     async fn process(
         &mut self,
-        _flow: &mut (dyn RecordFlow<E> + Send + Sync),
+        behavior: &B,
+        _flow: &mut (dyn RecordFlow<B::Event> + Send),
         _entity_id: EntityId,
         prev_result: Result,
-        _update_entity: &mut (dyn FnMut(Record<E>) + Send + Sync),
+        _update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
     ) -> Result {
         let f = self.f.take();
         if let Some(f) = f {
-            f(prev_result).await
+            f(behavior, prev_result).await
         } else {
             Ok(())
         }
     }
 }
 
-impl<E, F, R> EffectExt<E> for Then<E, F, R>
+impl<B, F, R> EffectExt<B> for Then<B, F, R>
 where
-    E: Send + Sync,
-    F: FnOnce(Result) -> R + Send + Sync,
+    B: EventSourcedBehavior + Send + Sync + 'static,
+    F: FnOnce(&B, Result) -> R + Send,
     R: Future<Output = Result> + Send,
 {
 }
 
-/// An effect to run a function asynchronously.
-pub fn then<E, F, R>(f: F) -> Then<E, F, R>
+/// A side effect to run a function asynchronously. The associated
+/// behavior is available so that communication channels, for
+/// example, can be accessed by the side-effect.
+pub fn then<B, F, R>(f: F) -> Then<B, F, R>
 where
-    F: FnOnce(Result) -> R + Send,
+    F: FnOnce(&B, Result) -> R + Send,
     R: Future<Output = Result>,
 {
     Then {
@@ -268,23 +301,24 @@ pub struct Unhandled<E> {
 }
 
 #[async_trait]
-impl<E> Effect<E> for Unhandled<E>
+impl<B> Effect<B> for Unhandled<B>
 where
-    E: Send + Sync,
+    B: EventSourcedBehavior + Send + Sync + 'static,
 {
     async fn process(
         &mut self,
-        _flow: &mut (dyn RecordFlow<E> + Send + Sync),
+        _behavior: &B,
+        _flow: &mut (dyn RecordFlow<B::Event> + Send),
         _entity_id: EntityId,
         _prev_result: Result,
-        _update_entity: &mut (dyn FnMut(Record<E>) + Send + Sync),
+        _update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
     ) -> Result {
         Ok(())
     }
 }
 
 /// An unhandled command producing no effect
-pub fn unhandled<E>() -> Box<Unhandled<E>> {
+pub fn unhandled<B>() -> Box<Unhandled<B>> {
     Box::new(Unhandled {
         phantom: PhantomData,
     })

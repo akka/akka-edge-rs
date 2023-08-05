@@ -29,16 +29,13 @@ pub const DEFAULT_ACTIVE_STATE: usize = 1;
 ///
 /// Yielded events can be consumed by using the entity manager as a source
 /// of a [Stream].
-pub struct EntityManager<B>
-where
-    B: EventSourcedBehavior + Send,
-{
+pub struct EntityManager<B> {
     phantom: PhantomData<B>,
 }
 
 impl<B> EntityManager<B>
 where
-    B: EventSourcedBehavior + Send + 'static,
+    B: EventSourcedBehavior,
 {
     fn update_entity(entities: &mut HashMap<EntityId, B::State>, record: Record<B::Event>)
     where
@@ -61,7 +58,7 @@ where
 
 impl<B> EntityManager<B>
 where
-    B: EventSourcedBehavior + Send + 'static,
+    B: EventSourcedBehavior + Send + Sync + 'static,
 {
     /// Establish a new entity manager with [DEFAULT_ACTIVE_STATE] instances
     /// active at a time.
@@ -76,10 +73,9 @@ where
     ) -> Self
     where
         B::Command: Send,
-        B::Event: Send,
-        B::State: Send + Sync,
-        RS: RecordSource<B::Event> + Send + Sync + 'static,
-        RF: RecordFlow<B::Event> + Send + Sync + 'static,
+        B::State: Send,
+        RS: RecordSource<B::Event> + Send + 'static,
+        RF: RecordFlow<B::Event> + Send + 'static,
     {
         Self::with_capacity(behavior, source, flow, receiver, DEFAULT_ACTIVE_STATE)
     }
@@ -101,15 +97,14 @@ where
     ) -> Self
     where
         B::Command: Send,
-        B::Event: Send,
-        B::State: Send + Sync,
-        RS: RecordSource<B::Event> + Send + Sync + 'static,
-        RF: RecordFlow<B::Event> + Send + Sync + 'static,
+        B::State: Send,
+        RS: RecordSource<B::Event> + Send + 'static,
+        RF: RecordFlow<B::Event> + Send + 'static,
     {
         tokio::spawn(async move {
             // Source our events and populate our internal entities map.
 
-            let mut entities: HashMap<EntityId, B::State> = HashMap::with_capacity(capacity);
+            let mut entities = HashMap::with_capacity(capacity);
 
             // Receive commands for the entities and process them.
 
@@ -129,17 +124,18 @@ where
                 // Effects may emit events that will update state on success.
 
                 let context = Context {
-                    entity_id: message.entity_id.clone(),
+                    entity_id: message.entity_id,
                 };
-                let mut effect = behavior.for_command(
-                    &context,
-                    entities.get(&message.entity_id),
-                    message.command,
-                );
+                let mut effect =
+                    B::for_command(&context, entities.get(&context.entity_id), message.command);
                 let _ = effect
-                    .process(&mut flow, message.entity_id, Ok(()), &mut |record| {
-                        Self::update_entity(&mut entities, record)
-                    })
+                    .process(
+                        &behavior,
+                        &mut flow,
+                        context.entity_id,
+                        Ok(()),
+                        &mut |record| Self::update_entity(&mut entities, record),
+                    )
                     .await;
             }
         });
@@ -209,11 +205,10 @@ mod tests {
         type Event = TempEvent;
 
         fn for_command(
-            &self,
             _context: &Context,
             state: Option<&Self::State>,
             command: Self::Command,
-        ) -> Box<dyn Effect<Self::Event>> {
+        ) -> Box<dyn Effect<Self>> {
             match (state, command) {
                 (None, TempCommand::Register) => emit_event(TempEvent::Registered).boxed(),
 
@@ -226,14 +221,16 @@ mod tests {
                 }
 
                 (Some(_state), TempCommand::UpdateTemperature { temp }) => {
-                    let updated = self.updated.clone();
                     emit_event(TempEvent::TemperatureUpdated { temp })
-                        .and(then(|prev_result| async move {
-                            if prev_result.is_ok() {
-                                updated.notify_one();
-                                println!("Updated!");
+                        .and(then(|behavior: &Self, prev_result| {
+                            let updated = behavior.updated.clone();
+                            async move {
+                                if prev_result.is_ok() {
+                                    updated.notify_one();
+                                    println!("Updated!");
+                                }
+                                prev_result
                             }
-                            prev_result
                         }))
                         .boxed()
                 }
