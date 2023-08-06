@@ -5,14 +5,37 @@
 //! entites to have a bounded number of entities in memory.
 //! The entities will recover their state from a stream of events.
 
+use async_trait::async_trait;
+use std::io;
+use std::pin::Pin;
 use std::{collections::HashMap, marker::PhantomData};
 use tokio::sync::mpsc::Receiver;
-use tokio_stream::StreamExt;
+use tokio_stream::{Stream, StreamExt};
 
 use crate::entity::Context;
 use crate::entity::EventSourcedBehavior;
-use crate::RecordSource;
-use crate::{EntityId, Message, Record, RecordFlow};
+use crate::{EntityId, Message, Record};
+
+/// Enables the interaction between data storage and an entity manager.
+#[async_trait]
+pub trait RecordAdapter<E> {
+    /// Produce a source of events. An entity id
+    /// is passed to the source method so that the source can be
+    /// discriminate regarding the entity events to supply. However,
+    /// the source can also decide to provide events for other
+    /// entities. Whether it does so or not depends on the capabilities
+    /// of the source e.g. it may be more efficient to return all
+    /// entities that can be sourced.
+    async fn produce(
+        &mut self,
+        entity_id: &EntityId,
+    ) -> io::Result<Pin<Box<dyn Stream<Item = Record<E>> + Send + 'async_trait>>>;
+
+    /// Consume a record, performing some processing
+    /// e.g. persisting a record, and then returning the same record
+    /// if all went well.
+    async fn process(&mut self, record: Record<E>) -> io::Result<Record<E>>;
+}
 
 /// The default amount of state (instances of an entity) that we
 /// retain at any one time.
@@ -65,19 +88,13 @@ where
     ///
     /// A task will also be spawned to source events and process
     /// commands using the stream and receiver channel passed in.
-    pub fn new<RF, RS>(
-        behavior: B,
-        source: RS,
-        flow: RF,
-        receiver: Receiver<Message<B::Command>>,
-    ) -> Self
+    pub fn new<A>(behavior: B, adapter: A, receiver: Receiver<Message<B::Command>>) -> Self
     where
         B::Command: Send,
         B::State: Send,
-        RS: RecordSource<B::Event> + Send + 'static,
-        RF: RecordFlow<B::Event> + Send + 'static,
+        A: RecordAdapter<B::Event> + Send + 'static,
     {
-        Self::with_capacity(behavior, source, flow, receiver, DEFAULT_ACTIVE_STATE)
+        Self::with_capacity(behavior, adapter, receiver, DEFAULT_ACTIVE_STATE)
     }
 
     /// Establish a new entity manager with capacity for a number of instances
@@ -88,18 +105,16 @@ where
     ///
     /// A task will also be spawned to source events and process
     /// commands using the stream and receiver channel passed in.
-    pub fn with_capacity<RS, RF>(
+    pub fn with_capacity<A>(
         behavior: B,
-        mut source: RS,
-        mut flow: RF,
+        mut adapter: A,
         mut receiver: Receiver<Message<B::Command>>,
         capacity: usize,
     ) -> Self
     where
         B::Command: Send,
         B::State: Send,
-        RS: RecordSource<B::Event> + Send + 'static,
-        RF: RecordFlow<B::Event> + Send + 'static,
+        A: RecordAdapter<B::Event> + Send + 'static,
     {
         tokio::spawn(async move {
             // Source our events and populate our internal entities map.
@@ -112,7 +127,7 @@ where
                 // Source entity if we don't have it.
 
                 if !entities.contains_key(&message.entity_id) {
-                    if let Ok(records) = source.produce(&message.entity_id) {
+                    if let Ok(records) = adapter.produce(&message.entity_id).await {
                         tokio::pin!(records);
                         while let Some(record) = records.next().await {
                             Self::update_entity(&mut entities, record);
@@ -131,7 +146,7 @@ where
                 let _ = effect
                     .process(
                         &behavior,
-                        &mut flow,
+                        &mut adapter,
                         context.entity_id,
                         Ok(()),
                         &mut |record| Self::update_entity(&mut entities, record),
@@ -246,47 +261,29 @@ mod tests {
         }
     }
 
-    // Create a source of records. Sources are used to provide
-    // the entity manager with records of events given an entity id. The
-    // contract permits for records not belonging to an entity id to be
-    // returned. This way, all records can be sourced at once, which is
-    // typically what we do at the edge i.e. all entities are brought into
-    // memory.
-    //
-    // For our tests, we produce our records from a vector provided during
-    // construction. We only expect to be called once. If we are called
-    // more than once then no records will be produced.
-    struct VecRecordSource {
+    // The following adapter is not normally created by a developer, but we
+    // declare one here so that we can provide a source of records and capture
+    // ones emitted by the entity manager.
+    struct VecRecordAdapter {
         records: Option<Vec<Record<TempEvent>>>,
+        captured_records: Arc<Mutex<Vec<Record<TempEvent>>>>,
     }
 
-    impl RecordSource<TempEvent> for VecRecordSource {
-        fn produce(
+    #[async_trait]
+    impl RecordAdapter<TempEvent> for VecRecordAdapter {
+        async fn produce(
             &mut self,
             _entity_id: &EntityId,
-        ) -> io::Result<Pin<Box<dyn Stream<Item = Record<TempEvent>> + Send>>> {
+        ) -> io::Result<Pin<Box<dyn Stream<Item = Record<TempEvent>> + Send + 'async_trait>>>
+        {
             if let Some(records) = self.records.take() {
                 Ok(Box::pin(tokio_stream::iter(records)))
             } else {
                 Ok(Box::pin(tokio_stream::empty()))
             }
         }
-    }
-
-    // Create a flow of records. Flows are used for the entity manager
-    // to push records through given an effect that emits events. The flow
-    // is generally used to persist an entity's events.
-    //
-    // For our tests, we record the records that have been pushed so we
-    // can check them later.
-    struct VecRecordFlow {
-        records: Arc<Mutex<Vec<Record<TempEvent>>>>,
-    }
-
-    #[async_trait]
-    impl RecordFlow<TempEvent> for VecRecordFlow {
         async fn process(&mut self, record: Record<TempEvent>) -> io::Result<Record<TempEvent>> {
-            self.records.lock().unwrap().push(record.clone());
+            self.captured_records.lock().unwrap().push(record.clone());
             Ok(record)
         }
     }
@@ -304,24 +301,20 @@ mod tests {
             updated: temp_sensor_updated.clone(),
         };
 
-        let temp_sensor_source = VecRecordSource {
+        let temp_sensor_events = Arc::new(Mutex::new(Vec::with_capacity(4)));
+        let temp_sensor_record_adapter = VecRecordAdapter {
             records: Some(vec![
                 Record::new("id-1", TempEvent::Registered),
                 Record::new("id-1", TempEvent::TemperatureUpdated { temp: 10 }),
             ]),
+            captured_records: temp_sensor_events.clone(),
         };
 
-        let temp_sensor_events = Arc::new(Mutex::new(Vec::with_capacity(4)));
-        let temp_sensor_flow = VecRecordFlow {
-            records: temp_sensor_events.clone(),
-        };
-
-        let (temp_sensor, temp_sensor_receiver) = mpsc::channel::<Message<TempCommand>>(10);
+        let (temp_sensor, temp_sensor_receiver) = mpsc::channel(10);
 
         EntityManager::new(
             temp_sensor_behavior,
-            temp_sensor_source,
-            temp_sensor_flow,
+            temp_sensor_record_adapter,
             temp_sensor_receiver,
         );
 

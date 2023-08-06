@@ -1,10 +1,5 @@
 #![doc = include_str!("../README.md")]
 
-use std::{io, pin::Pin};
-
-use async_trait::async_trait;
-use tokio_stream::Stream;
-
 pub mod effect;
 pub mod entity;
 pub mod entity_manager;
@@ -60,26 +55,4 @@ impl<E> Record<E> {
             },
         }
     }
-}
-
-/// A trait for producing a source of events. An entity id
-/// is passed to the source method so that the source can be
-/// discriminate regarding the entity events to supply. However,
-/// the source can also decide to provide events for other
-/// entities. Whether it does so or not depends on the capabilities
-/// of the source e.g. it may be more efficient to return all
-/// entities that can be sourced.
-pub trait RecordSource<E> {
-    fn produce(
-        &mut self,
-        entity_id: &EntityId,
-    ) -> io::Result<Pin<Box<dyn Stream<Item = Record<E>> + Send>>>;
-}
-
-/// A trait for consuming a record, performing some processing
-/// e.g. persisting a record, and then returning the same record
-/// if all went well.
-#[async_trait]
-pub trait RecordFlow<E> {
-    async fn process(&mut self, record: Record<E>) -> io::Result<Record<E>>;
 }

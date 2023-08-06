@@ -6,7 +6,7 @@ use std::{future::Future, io, marker::PhantomData};
 use async_trait::async_trait;
 use tokio::sync::oneshot;
 
-use crate::{entity::EventSourcedBehavior, EntityId, Record, RecordFlow};
+use crate::{entity::EventSourcedBehavior, entity_manager::RecordAdapter, EntityId, Record};
 
 /// Errors that can occur when applying effects.
 pub enum Error {
@@ -27,7 +27,7 @@ where
     async fn process(
         &mut self,
         behavior: &B,
-        flow: &mut (dyn RecordFlow<B::Event> + Send),
+        adapter: &mut (dyn RecordAdapter<B::Event> + Send),
         entity_id: EntityId,
         prev_result: Result,
         update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
@@ -51,7 +51,7 @@ where
     async fn process(
         &mut self,
         behavior: &B,
-        flow: &mut (dyn RecordFlow<B::Event> + Send),
+        adapter: &mut (dyn RecordAdapter<B::Event> + Send),
         entity_id: EntityId,
         prev_result: Result,
         update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
@@ -60,7 +60,7 @@ where
             ._l
             .process(
                 behavior,
-                flow,
+                adapter,
                 entity_id.clone(),
                 prev_result,
                 update_entity,
@@ -68,7 +68,7 @@ where
             .await;
         if r.is_ok() {
             self._r
-                .process(behavior, flow, entity_id, r, update_entity)
+                .process(behavior, adapter, entity_id, r, update_entity)
                 .await
         } else {
             r
@@ -130,7 +130,7 @@ where
     async fn process(
         &mut self,
         _behavior: &B,
-        flow: &mut (dyn RecordFlow<B::Event> + Send),
+        adapter: &mut (dyn RecordAdapter<B::Event> + Send),
         entity_id: EntityId,
         prev_result: Result,
         update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
@@ -144,7 +144,7 @@ where
                         deletion_event: self.deletion_event,
                     },
                 };
-                let result = flow.process(record).await.map_err(Error::IoError);
+                let result = adapter.process(record).await.map_err(Error::IoError);
                 if let Ok(record) = result {
                     update_entity(record);
                     Ok(())
@@ -210,7 +210,7 @@ where
     async fn process(
         &mut self,
         _behavior: &B,
-        _flow: &mut (dyn RecordFlow<B::Event> + Send),
+        _adapter: &mut (dyn RecordAdapter<B::Event> + Send),
         _entity_id: EntityId,
         prev_result: Result,
         _update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
@@ -258,7 +258,7 @@ where
     async fn process(
         &mut self,
         behavior: &B,
-        _flow: &mut (dyn RecordFlow<B::Event> + Send),
+        _adapter: &mut (dyn RecordAdapter<B::Event> + Send),
         _entity_id: EntityId,
         prev_result: Result,
         _update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
@@ -308,7 +308,7 @@ where
     async fn process(
         &mut self,
         _behavior: &B,
-        _flow: &mut (dyn RecordFlow<B::Event> + Send),
+        _adapter: &mut (dyn RecordAdapter<B::Event> + Send),
         _entity_id: EntityId,
         _prev_result: Result,
         _update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
