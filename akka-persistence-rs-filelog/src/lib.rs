@@ -144,7 +144,7 @@ mod tests {
 
     use super::*;
     use akka_persistence_rs::{
-        entity::EventSourcedBehavior, entity_manager::EntityManager, Message, RecordMetadata,
+        entity::EventSourcedBehavior, entity_manager::EntityManager, RecordMetadata,
     };
     use streambed::commit_log::Header;
     use test_log::test;

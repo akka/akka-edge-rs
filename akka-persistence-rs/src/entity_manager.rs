@@ -147,9 +147,10 @@ where
                     .process(
                         &behavior,
                         &mut adapter,
+                        &mut entities,
                         context.entity_id,
                         Ok(()),
-                        &mut |record| Self::update_entity(&mut entities, record),
+                        &mut |entities, record| Self::update_entity(entities, record),
                     )
                     .await;
             }
@@ -237,12 +238,13 @@ mod tests {
 
                 (Some(_state), TempCommand::UpdateTemperature { temp }) => {
                     emit_event(TempEvent::TemperatureUpdated { temp })
-                        .and(then(|behavior: &Self, prev_result| {
+                        .and(then(|behavior: &Self, new_state, prev_result| {
                             let updated = behavior.updated.clone();
+                            let temp = new_state.map_or(0, |s| s.temp);
                             async move {
                                 if prev_result.is_ok() {
                                     updated.notify_one();
-                                    println!("Updated!");
+                                    println!("Updated with {}!", temp);
                                 }
                                 prev_result
                             }

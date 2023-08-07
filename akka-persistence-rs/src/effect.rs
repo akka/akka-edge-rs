@@ -1,7 +1,7 @@
 //! Effects that are lazily performed as a result of performing a command
 //! of an entity. Effects can be chained with other effects.
 
-use std::{future::Future, io, marker::PhantomData};
+use std::{collections::HashMap, future::Future, io, marker::PhantomData};
 
 use async_trait::async_trait;
 use tokio::sync::oneshot;
@@ -28,9 +28,11 @@ where
         &mut self,
         behavior: &B,
         adapter: &mut (dyn RecordAdapter<B::Event> + Send),
+        entities: &mut HashMap<EntityId, B::State>,
         entity_id: EntityId,
         prev_result: Result,
-        update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
+        update_entity: &mut (dyn for<'a> FnMut(&'a mut HashMap<EntityId, B::State>, Record<B::Event>)
+                  + Send),
     ) -> Result;
 }
 
@@ -45,6 +47,7 @@ pub struct And<E, L, R> {
 impl<B, L, R> Effect<B> for And<B, L, R>
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
+    B::State: Send,
     L: Effect<B>,
     R: Effect<B>,
 {
@@ -52,15 +55,18 @@ where
         &mut self,
         behavior: &B,
         adapter: &mut (dyn RecordAdapter<B::Event> + Send),
+        entities: &mut HashMap<EntityId, B::State>,
         entity_id: EntityId,
         prev_result: Result,
-        update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
+        update_entity: &mut (dyn for<'a> FnMut(&'a mut HashMap<EntityId, B::State>, Record<B::Event>)
+                  + Send),
     ) -> Result {
         let r = self
             ._l
             .process(
                 behavior,
                 adapter,
+                entities,
                 entity_id.clone(),
                 prev_result,
                 update_entity,
@@ -68,7 +74,7 @@ where
             .await;
         if r.is_ok() {
             self._r
-                .process(behavior, adapter, entity_id, r, update_entity)
+                .process(behavior, adapter, entities, entity_id, r, update_entity)
                 .await
         } else {
             r
@@ -79,6 +85,7 @@ where
 impl<B, L, R> EffectExt<B> for And<B, L, R>
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
+    B::State: Send,
     L: Effect<B>,
     R: Effect<B>,
 {
@@ -125,15 +132,18 @@ where
 impl<B> Effect<B> for EmitEvent<B>
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
+    B::State: Send,
     B::Event: Send,
 {
     async fn process(
         &mut self,
         _behavior: &B,
         adapter: &mut (dyn RecordAdapter<B::Event> + Send),
+        entities: &mut HashMap<EntityId, B::State>,
         entity_id: EntityId,
         prev_result: Result,
-        update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
+        update_entity: &mut (dyn for<'a> FnMut(&'a mut HashMap<EntityId, B::State>, Record<B::Event>)
+                  + Send),
     ) -> Result {
         if prev_result.is_ok() {
             if let Some(event) = self.event.take() {
@@ -146,7 +156,7 @@ where
                 };
                 let result = adapter.process(record).await.map_err(Error::IoError);
                 if let Ok(record) = result {
-                    update_entity(record);
+                    update_entity(entities, record);
                     Ok(())
                 } else {
                     result.map(|_| ())
@@ -163,6 +173,7 @@ where
 impl<B> EffectExt<B> for EmitEvent<B>
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
+    B::State: Send,
     B::Event: Send,
 {
 }
@@ -211,9 +222,11 @@ where
         &mut self,
         _behavior: &B,
         _adapter: &mut (dyn RecordAdapter<B::Event> + Send),
+        _entities: &mut HashMap<EntityId, B::State>,
         _entity_id: EntityId,
         prev_result: Result,
-        _update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
+        _update_entity: &mut (dyn for<'a> FnMut(&'a mut HashMap<EntityId, B::State>, Record<B::Event>)
+                  + Send),
     ) -> Result {
         if prev_result.is_ok() {
             if let Some((reply_to, reply)) = self.replier.take() {
@@ -252,20 +265,23 @@ pub struct Then<B, F, R> {
 impl<B, F, R> Effect<B> for Then<B, F, R>
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
-    F: FnOnce(&B, Result) -> R + Send,
+    B::State: Send + Sync,
+    F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
     R: Future<Output = Result> + Send,
 {
     async fn process(
         &mut self,
         behavior: &B,
         _adapter: &mut (dyn RecordAdapter<B::Event> + Send),
-        _entity_id: EntityId,
+        entities: &mut HashMap<EntityId, B::State>,
+        entity_id: EntityId,
         prev_result: Result,
-        _update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
+        _update_entity: &mut (dyn for<'a> FnMut(&'a mut HashMap<EntityId, B::State>, Record<B::Event>)
+                  + Send),
     ) -> Result {
         let f = self.f.take();
         if let Some(f) = f {
-            f(behavior, prev_result).await
+            f(behavior, entities.get(&entity_id), prev_result).await
         } else {
             Ok(())
         }
@@ -275,17 +291,23 @@ where
 impl<B, F, R> EffectExt<B> for Then<B, F, R>
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
-    F: FnOnce(&B, Result) -> R + Send,
+    B::State: Send + Sync,
+    F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
     R: Future<Output = Result> + Send,
 {
 }
 
 /// A side effect to run a function asynchronously. The associated
 /// behavior is available so that communication channels, for
-/// example, can be accessed by the side-effect.
+/// example, can be accessed by the side-effect. Additionally, the
+/// latest state given any previous effect having emitted an event,
+/// or else the state at the outset of the effects being applied,
+/// is also available.
 pub fn then<B, F, R>(f: F) -> Then<B, F, R>
 where
-    F: FnOnce(&B, Result) -> R + Send,
+    B: EventSourcedBehavior + Send + Sync + 'static,
+    B::State: Send + Sync,
+    F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
     R: Future<Output = Result>,
 {
     Then {
@@ -309,9 +331,11 @@ where
         &mut self,
         _behavior: &B,
         _adapter: &mut (dyn RecordAdapter<B::Event> + Send),
+        _entities: &mut HashMap<EntityId, B::State>,
         _entity_id: EntityId,
         _prev_result: Result,
-        _update_entity: &mut (dyn FnMut(Record<B::Event>) + Send),
+        _update_entity: &mut (dyn for<'a> FnMut(&'a mut HashMap<EntityId, B::State>, Record<B::Event>)
+                  + Send),
     ) -> Result {
         Ok(())
     }
