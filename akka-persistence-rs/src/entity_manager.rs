@@ -152,16 +152,19 @@ where
                 };
                 let mut effect =
                     B::for_command(&context, entities.get(&context.entity_id), message.command);
-                let _ = effect
+                let result = effect
                     .process(
                         &behavior,
                         &mut adapter,
                         &mut entities,
-                        context.entity_id,
+                        context.entity_id.clone(),
                         Ok(()),
                         &mut |entities, record| Self::update_entity(entities, record),
                     )
                     .await;
+                if result.is_err() {
+                    entities.remove(&context.entity_id);
+                }
             }
         });
 
