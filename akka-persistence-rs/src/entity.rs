@@ -34,7 +34,7 @@ pub trait EventSourcedBehavior {
     /// so that data can be sent as an effect of performing a command.
     fn for_command(
         context: &Context,
-        state: Option<&Self::State>,
+        state: &Self::State,
         command: Self::Command,
     ) -> Box<dyn Effect<Self>>;
 

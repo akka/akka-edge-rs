@@ -157,8 +157,13 @@ where
                 let context = Context {
                     entity_id: message.entity_id,
                 };
-                let mut effect =
-                    B::for_command(&context, entities.get(&context.entity_id), message.command);
+                let mut effect = B::for_command(
+                    &context,
+                    entities
+                        .get(&context.entity_id)
+                        .unwrap_or(&B::State::default()),
+                    message.command,
+                );
                 let result = effect
                     .process(
                         &behavior,
@@ -204,6 +209,7 @@ mod tests {
 
     #[derive(Default)]
     struct TempState {
+        registered: bool,
         temp: u32,
     }
 
@@ -234,21 +240,23 @@ mod tests {
 
         fn for_command(
             _context: &Context,
-            state: Option<&Self::State>,
+            state: &Self::State,
             command: Self::Command,
         ) -> Box<dyn Effect<Self>> {
-            match (state, command) {
-                (None, TempCommand::Register) => emit_event(TempEvent::Registered).boxed(),
+            match command {
+                TempCommand::Register if !state.registered => {
+                    emit_event(TempEvent::Registered).boxed()
+                }
 
-                (Some(_), TempCommand::Deregister) => {
+                TempCommand::Deregister if state.registered => {
                     emit_deletion_event(TempEvent::Deregistered).boxed()
                 }
 
-                (Some(state), TempCommand::GetTemperature { reply_to }) => {
+                TempCommand::GetTemperature { reply_to } if state.registered => {
                     reply(reply_to, state.temp).boxed()
                 }
 
-                (Some(_state), TempCommand::UpdateTemperature { temp }) => {
+                TempCommand::UpdateTemperature { temp } if state.registered => {
                     emit_event(TempEvent::TemperatureUpdated { temp })
                         .and(then(|behavior: &Self, new_state, prev_result| {
                             let updated = behavior.updated.clone();
@@ -269,8 +277,10 @@ mod tests {
         }
 
         fn on_event(_context: &Context, state: &mut Self::State, event: &Self::Event) {
-            if let TempEvent::TemperatureUpdated { temp } = event {
-                state.temp = *temp;
+            match event {
+                TempEvent::Deregistered => state.registered = false,
+                TempEvent::Registered => state.registered = true,
+                TempEvent::TemperatureUpdated { temp } => state.temp = *temp,
             }
         }
     }

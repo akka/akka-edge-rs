@@ -53,15 +53,15 @@ impl EventSourcedBehavior for Behavior {
 
     fn for_command(
         _context: &akka_persistence_rs::entity::Context,
-        state: Option<&Self::State>,
+        state: &Self::State,
         command: Self::Command,
     ) -> Box<dyn akka_persistence_rs::effect::Effect<Self>> {
-        match (state, command) {
-            (Some(state), Command::Get { reply_to }) => {
+        match command {
+            Command::Get { reply_to } if !state.history.is_empty() => {
                 reply(reply_to, state.history.clone().into()).boxed()
             }
 
-            (_, Command::Post { temperature }) => {
+            Command::Post { temperature } => {
                 emit_event(Event::TemperatureRead { temperature }).boxed()
             }
 

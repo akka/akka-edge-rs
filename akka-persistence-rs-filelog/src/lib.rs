@@ -175,7 +175,7 @@ mod tests {
 
         fn for_command(
             _context: &akka_persistence_rs::entity::Context,
-            _state: Option<&Self::State>,
+            _state: &Self::State,
             _command: Self::Command,
         ) -> Box<dyn akka_persistence_rs::effect::Effect<Self>> {
             todo!()
