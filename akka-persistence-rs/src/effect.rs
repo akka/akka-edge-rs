@@ -246,7 +246,8 @@ where
 }
 
 /// An effect to reply a record if the previous effect completed
-/// successfully.
+/// successfully. Note that if state from having emitted an event
+/// via a prior effect is required, then use a [then] effect instead.
 pub fn reply<B, T>(reply_to: oneshot::Sender<T>, reply: T) -> Reply<B, T> {
     Reply {
         replier: Some((reply_to, reply)),
