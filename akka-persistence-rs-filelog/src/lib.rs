@@ -72,9 +72,8 @@ where
     for<'async_trait> E: Send + 'async_trait,
     M: FileLogRecordMarshaler<E> + Send + Sync,
 {
-    async fn produce(
+    async fn produce_initial(
         &mut self,
-        _entity_id: &EntityId,
     ) -> io::Result<Pin<Box<dyn Stream<Item = Record<E>> + Send + 'async_trait>>> {
         let last_offset = self
             .commit_log
@@ -113,6 +112,13 @@ where
         } else {
             Ok(Box::pin(tokio_stream::empty()))
         }
+    }
+
+    async fn produce(
+        &mut self,
+        _entity_id: &EntityId,
+    ) -> io::Result<Pin<Box<dyn Stream<Item = Record<E>> + Send + 'async_trait>>> {
+        Ok(Box::pin(tokio_stream::empty()))
     }
 
     async fn process(&mut self, record: Record<E>) -> io::Result<Record<E>> {
@@ -256,7 +262,7 @@ mod tests {
         // Produce a stream given no prior persistence. Should return an empty stream.
 
         {
-            let mut records = adapter.produce(&entity_id).await.unwrap();
+            let mut records = adapter.produce_initial().await.unwrap();
             assert!(records.next().await.is_none());
         }
 
@@ -300,7 +306,7 @@ mod tests {
         }
 
         {
-            let mut records = adapter.produce(&entity_id).await.unwrap();
+            let mut records = adapter.produce_initial().await.unwrap();
 
             let record = records.next().await.unwrap();
             assert_eq!(record.entity_id, entity_id);

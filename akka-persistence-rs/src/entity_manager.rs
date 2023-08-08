@@ -19,13 +19,15 @@ use crate::{EntityId, Message, Record};
 /// Enables the interaction between data storage and an entity manager.
 #[async_trait]
 pub trait RecordAdapter<E> {
+    /// Produce an initial source of events, which is called upon an entity
+    /// manager starting up.
+    async fn produce_initial(
+        &mut self,
+    ) -> io::Result<Pin<Box<dyn Stream<Item = Record<E>> + Send + 'async_trait>>>;
+
     /// Produce a source of events. An entity id
-    /// is passed to the source method so that the source can be
-    /// discriminate regarding the entity events to supply. However,
-    /// the source can also decide to provide events for other
-    /// entities. Whether it does so or not depends on the capabilities
-    /// of the source e.g. it may be more efficient to return all
-    /// entities that can be sourced.
+    /// is passed to the source method so that the source is
+    /// discriminate regarding the entity events to supply.
     async fn produce(
         &mut self,
         entity_id: &EntityId,
@@ -117,9 +119,16 @@ where
         A: RecordAdapter<B::Event> + Send + 'static,
     {
         tokio::spawn(async move {
-            // Source our events and populate our internal entities map.
+            // Source our initial events and populate our internal entities map.
 
             let mut entities = HashMap::with_capacity(capacity);
+
+            if let Ok(records) = adapter.produce_initial().await {
+                tokio::pin!(records);
+                while let Some(record) = records.next().await {
+                    Self::update_entity(&mut entities, record);
+                }
+            }
 
             // Receive commands for the entities and process them.
 
@@ -273,9 +282,8 @@ mod tests {
 
     #[async_trait]
     impl RecordAdapter<TempEvent> for VecRecordAdapter {
-        async fn produce(
+        async fn produce_initial(
             &mut self,
-            _entity_id: &EntityId,
         ) -> io::Result<Pin<Box<dyn Stream<Item = Record<TempEvent>> + Send + 'async_trait>>>
         {
             if let Some(records) = self.records.take() {
@@ -284,6 +292,15 @@ mod tests {
                 Ok(Box::pin(tokio_stream::empty()))
             }
         }
+
+        async fn produce(
+            &mut self,
+            _entity_id: &EntityId,
+        ) -> io::Result<Pin<Box<dyn Stream<Item = Record<TempEvent>> + Send + 'async_trait>>>
+        {
+            Ok(Box::pin(tokio_stream::empty()))
+        }
+
         async fn process(&mut self, record: Record<TempEvent>) -> io::Result<Record<TempEvent>> {
             self.captured_records.lock().unwrap().push(record.clone());
             Ok(record)
