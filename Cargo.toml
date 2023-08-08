@@ -1,14 +1,29 @@
 [workspace]
 
-members = ["akka-persistence-rs", "akka-persistence-rs-filelog"]
+members = [
+    "akka-persistence-rs",
+    "akka-persistence-rs-filelog",
+    "examples/iot-service",
+]
 
 [workspace.dependencies]
 async-stream = "0.3.3"
 async-trait = "0.1.72"
+chrono = "0.4.23"
+ciborium = "0.2"
+clap = "4.0.29"
 env_logger = "0.10.0"
+git-version = "0.3.5"
+hex = "0.4.3"
+humantime = "2.1.0"
+log = "0.4.17"
+postcard = { version = "1.0.6", default-features = false }
+scopeguard = "1.1"
 serde = "1.0.151"
 streambed = { git = "https://github.com/streambed/streambed-rs.git", rev = "4b7e1561666bc1860339d27f5abf9be246ef5ad9" }
 streambed-logged = { git = "https://github.com/streambed/streambed-rs.git", rev = "4b7e1561666bc1860339d27f5abf9be246ef5ad9" }
 test-log = "0.2.11"
 tokio = "1.23.0"
 tokio-stream = "0.1.14"
+tokio-util = "0.7.4"
+warp = "0.3"

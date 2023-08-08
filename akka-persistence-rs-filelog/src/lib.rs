@@ -4,7 +4,9 @@ use akka_persistence_rs::{entity_manager::RecordAdapter, EntityId, Record};
 use async_stream::stream;
 use async_trait::async_trait;
 use std::{io, marker::PhantomData, pin::Pin};
-use streambed::commit_log::{CommitLog, ConsumerRecord, ProducerRecord, Subscription, Topic};
+use streambed::commit_log::{
+    CommitLog, ConsumerRecord, ProducerRecord, Subscription, Topic, TopicRef,
+};
 use streambed_logged::FileLog;
 use tokio_stream::{Stream, StreamExt};
 
@@ -53,14 +55,14 @@ where
     pub fn new(
         commit_log: FileLog,
         marshaller: M,
-        consumer_group_name: String,
-        topic: Topic,
+        consumer_group_name: &str,
+        topic: TopicRef,
     ) -> Self {
         Self {
             commit_log,
-            consumer_group_name,
+            consumer_group_name: consumer_group_name.into(),
             marshaller,
-            topic,
+            topic: topic.into(),
             phantom: PhantomData,
         }
     }
@@ -251,8 +253,8 @@ mod tests {
         let mut adapter = FileLogTopicAdapter::new(
             commit_log.clone(),
             marshaller,
-            "some-consumer".to_string(),
-            "some-topic".to_string(),
+            "some-consumer",
+            "some-topic",
         );
 
         // Scaffolding
@@ -326,12 +328,8 @@ mod tests {
 
         let marshaller = MyEventMarshaler;
 
-        let file_log_topic_adapter = FileLogTopicAdapter::new(
-            commit_log,
-            marshaller,
-            "some-consumer".to_string(),
-            "some-topic".to_string(),
-        );
+        let file_log_topic_adapter =
+            FileLogTopicAdapter::new(commit_log, marshaller, "some-consumer", "some-topic");
 
         let my_behavior = MyBehavior;
 

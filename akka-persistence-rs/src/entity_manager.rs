@@ -10,6 +10,7 @@ use std::io;
 use std::pin::Pin;
 use std::{collections::HashMap, marker::PhantomData};
 use tokio::sync::mpsc::Receiver;
+use tokio::task::{JoinError, JoinHandle};
 use tokio_stream::{Stream, StreamExt};
 
 use crate::entity::Context;
@@ -55,6 +56,7 @@ pub const DEFAULT_ACTIVE_STATE: usize = 1;
 /// Yielded events can be consumed by using the entity manager as a source
 /// of a [Stream].
 pub struct EntityManager<B> {
+    join_handle: JoinHandle<()>,
     phantom: PhantomData<B>,
 }
 
@@ -62,6 +64,11 @@ impl<B> EntityManager<B>
 where
     B: EventSourcedBehavior,
 {
+    /// This method can be used to wait for an entity manager to complete.
+    pub async fn join(self) -> Result<(), JoinError> {
+        self.join_handle.await
+    }
+
     fn update_entity(entities: &mut HashMap<EntityId, B::State>, record: Record<B::Event>)
     where
         B::State: Default,
@@ -118,7 +125,7 @@ where
         B::State: Send,
         A: RecordAdapter<B::Event> + Send + 'static,
     {
-        tokio::spawn(async move {
+        let join_handle = tokio::spawn(async move {
             // Source our initial events and populate our internal entities map.
 
             let mut entities = HashMap::with_capacity(capacity);
@@ -169,6 +176,7 @@ where
         });
 
         Self {
+            join_handle,
             phantom: PhantomData,
         }
     }
