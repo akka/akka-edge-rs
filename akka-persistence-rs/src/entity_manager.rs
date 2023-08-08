@@ -176,12 +176,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        io,
-        pin::Pin,
-        sync::{Arc, Mutex},
-        time::Duration,
-    };
+    use std::{io, pin::Pin, sync::Arc};
 
     use super::*;
     use crate::{
@@ -190,10 +185,7 @@ mod tests {
     };
     use async_trait::async_trait;
     use test_log::test;
-    use tokio::{
-        sync::{mpsc, oneshot, Notify},
-        time,
-    };
+    use tokio::sync::{mpsc, oneshot, Notify};
     use tokio_stream::Stream;
 
     // Declare an entity behavior. We do this by declaring state, commands, events and then the
@@ -279,8 +271,8 @@ mod tests {
     // declare one here so that we can provide a source of records and capture
     // ones emitted by the entity manager.
     struct VecRecordAdapter {
-        records: Option<Vec<Record<TempEvent>>>,
-        captured_records: Arc<Mutex<Vec<Record<TempEvent>>>>,
+        initial_records: Option<Vec<Record<TempEvent>>>,
+        captured_records: mpsc::Sender<Record<TempEvent>>,
     }
 
     #[async_trait]
@@ -289,7 +281,7 @@ mod tests {
             &mut self,
         ) -> io::Result<Pin<Box<dyn Stream<Item = Record<TempEvent>> + Send + 'async_trait>>>
         {
-            if let Some(records) = self.records.take() {
+            if let Some(records) = self.initial_records.take() {
                 Ok(Box::pin(tokio_stream::iter(records)))
             } else {
                 Ok(Box::pin(tokio_stream::empty()))
@@ -305,8 +297,16 @@ mod tests {
         }
 
         async fn process(&mut self, record: Record<TempEvent>) -> io::Result<Record<TempEvent>> {
-            self.captured_records.lock().unwrap().push(record.clone());
-            Ok(record)
+            self.captured_records
+                .send(record.clone())
+                .await
+                .map(|_| record)
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        "A problem occurred processing a record",
+                    )
+                })
         }
     }
 
@@ -323,13 +323,13 @@ mod tests {
             updated: temp_sensor_updated.clone(),
         };
 
-        let temp_sensor_events = Arc::new(Mutex::new(Vec::with_capacity(4)));
+        let (temp_sensor_events, mut temp_sensor_events_captured) = mpsc::channel(4);
         let temp_sensor_record_adapter = VecRecordAdapter {
-            records: Some(vec![
+            initial_records: Some(vec![
                 Record::new("id-1", TempEvent::Registered),
                 Record::new("id-1", TempEvent::TemperatureUpdated { temp: 10 }),
             ]),
-            captured_records: temp_sensor_events.clone(),
+            captured_records: temp_sensor_events,
         };
 
         let (temp_sensor, temp_sensor_receiver) = mpsc::channel(10);
@@ -390,57 +390,34 @@ mod tests {
             .await
             .is_ok());
 
-        // We now consume our entity manager as a source of events. If we attempt to
-        // consume more than four events given this use-case, then the program would
-        // run forever as we don't produce a fifth event.
+        // Drop our command sender so that the entity manager stops.
 
-        let mut wait_count = 0;
+        drop(temp_sensor);
 
-        while wait_count < 10 {
-            let (temp_sensor_events_len, temp_sensor_events) = {
-                let guarded_temp_sensor_events = temp_sensor_events.lock().unwrap();
-                (
-                    guarded_temp_sensor_events.len(),
-                    guarded_temp_sensor_events.clone(),
-                )
-            };
+        // We now consume our entity manager as a source of events.
 
-            match temp_sensor_events_len.cmp(&4) {
-                std::cmp::Ordering::Less => {
-                    wait_count += 1;
-                    time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            temp_sensor_events_captured.recv().await.unwrap(),
+            Record::new("id-1", TempEvent::TemperatureUpdated { temp: 32 })
+        );
+        assert_eq!(
+            temp_sensor_events_captured.recv().await.unwrap(),
+            Record::new("id-1", TempEvent::TemperatureUpdated { temp: 64 })
+        );
+        assert_eq!(
+            temp_sensor_events_captured.recv().await.unwrap(),
+            Record {
+                entity_id: "id-1".to_string(),
+                event: TempEvent::Deregistered,
+                metadata: crate::RecordMetadata {
+                    deletion_event: true
                 }
-
-                std::cmp::Ordering::Equal => {
-                    let mut temp_sensor_events_iter = temp_sensor_events.iter();
-
-                    assert_eq!(
-                        temp_sensor_events_iter.next().unwrap(),
-                        &Record::new("id-1", TempEvent::TemperatureUpdated { temp: 32 })
-                    );
-                    assert_eq!(
-                        temp_sensor_events_iter.next().unwrap(),
-                        &Record::new("id-1", TempEvent::TemperatureUpdated { temp: 64 })
-                    );
-                    assert_eq!(
-                        temp_sensor_events_iter.next().unwrap(),
-                        &Record {
-                            entity_id: "id-1".to_string(),
-                            event: TempEvent::Deregistered,
-                            metadata: crate::RecordMetadata {
-                                deletion_event: true
-                            }
-                        }
-                    );
-                    assert_eq!(
-                        temp_sensor_events_iter.next().unwrap(),
-                        &Record::new("id-2", TempEvent::Registered)
-                    );
-                    break;
-                }
-
-                std::cmp::Ordering::Greater => panic!("Too many events"),
             }
-        }
+        );
+        assert_eq!(
+            temp_sensor_events_captured.recv().await.unwrap(),
+            Record::new("id-2", TempEvent::Registered)
+        );
+        assert!(temp_sensor_events_captured.recv().await.is_none());
     }
 }
