@@ -28,10 +28,7 @@ pub trait FileLogRecordMarshaler<E> {
 /// within one topic.
 ///
 /// As FileLog is intended for use at the edge, we assume
-/// that all entities will be event sourced into memory. Therefore,
-/// when asked to produce a source for a specific entity id,
-/// the adapter will return all entities from the topic. This
-/// is permissible by the [RecordSource] contract.
+/// that all entities will be event sourced into memory.
 ///
 /// Developers are required to provide implementations of [FileLogRecordMarshaler]
 /// for bytes and records i.e. deserialization/decryption and
