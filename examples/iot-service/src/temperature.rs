@@ -126,7 +126,7 @@ pub async fn task(
     // We register a compaction strategy for our topic such that when we use up
     // 64KB of disk space (the default), we will run compaction so that unwanted
     // events are removed. In our scenario, unwanted events can be removed when
-    // the exceed MAX_EVENTS_TO_REPLY as we do not have a requirement to ever
+    // the exceed MAX_HISTORY_EVENTS as we do not have a requirement to ever
     // return more than that.
     cl.register_compaction(
         EVENTS_TOPIC.to_string(),
