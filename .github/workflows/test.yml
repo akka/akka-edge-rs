@@ -1,0 +1,37 @@
+name: Test
+
+on:
+  push:
+    branches: [ master ]
+
+  pull_request:
+    branches: [ master ]
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-20.04
+
+    env:
+      RUSTFLAGS: -Dwarnings
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Update Rust
+      run: |
+        rustup update
+    - uses: Swatinem/rust-cache@v2
+
+    - name: test
+      run: |
+        cargo clippy --tests
+        cargo fmt -- --check
+        cargo test
