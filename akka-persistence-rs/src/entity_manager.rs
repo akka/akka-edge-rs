@@ -21,7 +21,8 @@ use crate::{EntityId, Message, Record};
 #[async_trait]
 pub trait RecordAdapter<E> {
     /// Produce an initial source of events, which is called upon an entity
-    /// manager starting up.
+    /// manager starting up. Any error from this method is considered fatal
+    /// and will terminate the entity manager.
     async fn produce_initial(
         &mut self,
     ) -> io::Result<Pin<Box<dyn Stream<Item = Record<E>> + Send + 'async_trait>>>;
@@ -135,6 +136,10 @@ where
                 while let Some(record) = records.next().await {
                     Self::update_entity(&mut entities, record);
                 }
+            } else {
+                // A problem sourcing initial events is regarded as fatal.
+
+                return;
             }
 
             // Receive commands for the entities and process them.
