@@ -4,11 +4,11 @@ use akka_persistence_rs::{
     effect::{emit_event, reply, unhandled, EffectExt},
     entity::EventSourcedBehavior,
     entity_manager::EntityManager,
-    Message, Record,
+    EntityId, Message, Record,
 };
 use akka_persistence_rs_filelog::{FileLogRecordMarshaler, FileLogTopicAdapter};
 use serde::{Deserialize, Serialize};
-use streambed::commit_log::{ConsumerRecord, Key, ProducerRecord, Topic};
+use streambed::commit_log::Key;
 use streambed_logged::{compaction::NthKeyBasedRetention, FileLog};
 use tokio::{
     sync::{mpsc, oneshot},
@@ -83,56 +83,42 @@ impl EventSourcedBehavior for Behavior {
     }
 }
 
-// Declare how we marshal our data with FileLog.
-
-// Our event keys will occupy the top 12 bits of the key, meaning
-// that we can have 4K types of record. We use 32 of the bottom 52
-// bits as an id.
-const EVENT_TYPE_BIT_SHIFT: usize = 52;
-const DEV_ADDR_BIT_MASK: u64 = 0xFFFFFFFF;
-
-pub(crate) fn compaction_key(entity_id: &str, event: &Event) -> Key {
-    let dev_addr = entity_id.parse::<u32>().unwrap();
-    let Event::TemperatureRead { .. } = event;
-    0 << EVENT_TYPE_BIT_SHIFT | dev_addr as u64
-}
+// Declare how we marshal our data with FileLog. This is essentially
+// down to encoding our event type and entity id to a key used for
+// the purposes of log compaction. The marshaller will use CBOR for
+// serialization of data persisted with the log. We do this as it has the
+// benefits of JSON in terms of schema evolution, but is faster to serialize
+// and represents itself as smaller on disk.
+// Marshalers can be completely overidden to serialize events and encode
+// keys in any way required.
 
 struct RecordMarshaler;
 
+// Our event keys will occupy the top 12 bits of the key, meaning
+// that we can have 4K types of record. We use 32 of the bottom 52
+// bits as the entity id. We choose 32 bits as this is a common size
+// for identifiers transmitted from IoT sensors. These identifiers
+// are also known as "device addresses" and represent an address
+// which may, in turn, equate to a 64 bit address globally unique
+// to a device. These globally unique addresses are not generally
+// transmitted in order to conserve packet size.
+const EVENT_TYPE_BIT_SHIFT: usize = 52;
+const EVENT_ID_BIT_MASK: u64 = 0xFFFFFFFF;
+
 impl FileLogRecordMarshaler<Event> for RecordMarshaler {
-    fn record(&self, record: ConsumerRecord) -> Option<Record<Event>> {
-        let dev_addr = (record.key & DEV_ADDR_BIT_MASK) as u32;
-        let entity_id = dev_addr.to_string();
-        ciborium::de::from_reader::<Event, _>(&*record.value)
-            .map(|event| Record::new(entity_id, event))
-            .ok()
+    fn to_compaction_key(record: &Record<Event>) -> Option<Key> {
+        let entity_id = record.entity_id.parse::<u32>().ok()?;
+        let Event::TemperatureRead { .. } = record.event;
+        Some(0 << EVENT_TYPE_BIT_SHIFT | entity_id as u64)
     }
 
-    fn producer_record(
-        &self,
-        topic: Topic,
-        record: Record<Event>,
-    ) -> Option<(ProducerRecord, Record<Event>)> {
-        let mut buf = Vec::new();
-        ciborium::ser::into_writer(&record.event, &mut buf).ok()?;
-        Some((
-            ProducerRecord {
-                topic,
-                headers: vec![],
-                timestamp: None,
-                key: compaction_key(&record.entity_id, &record.event),
-                value: buf,
-                partition: 0,
-            },
-            record,
-        ))
+    fn to_entity_id(record: &streambed::commit_log::ConsumerRecord) -> Option<EntityId> {
+        let entity_id = (record.key & EVENT_ID_BIT_MASK) as u32;
+        Some(entity_id.to_string())
     }
 }
 
-/// Manage the temperature sensor. We use CBOR as the serialization type for the data
-/// we persist to the log. We do this as it has the benefits of JSON in terms
-/// of schema evolution, but is faster to serialize and represents itself as
-/// smaller on disk.
+/// Manage the temperature sensor.
 pub async fn task(
     mut cl: FileLog,
     command_receiver: mpsc::Receiver<Message<Command>>,

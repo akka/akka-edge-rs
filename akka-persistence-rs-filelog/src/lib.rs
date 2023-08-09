@@ -3,17 +3,61 @@
 use akka_persistence_rs::{entity_manager::RecordAdapter, EntityId, Record};
 use async_stream::stream;
 use async_trait::async_trait;
+use serde::{de::DeserializeOwned, Serialize};
 use std::{io, marker::PhantomData, pin::Pin};
 use streambed::commit_log::{
-    CommitLog, ConsumerRecord, ProducerRecord, Subscription, Topic, TopicRef,
+    CommitLog, ConsumerRecord, Key, ProducerRecord, Subscription, Topic, TopicRef,
 };
 use streambed_logged::FileLog;
 use tokio_stream::{Stream, StreamExt};
 
 /// Provides the ability to transform the the memory representation of Akka Persistence records from
-/// and to the records that a FileLog expects.
-pub trait FileLogRecordMarshaler<E> {
+/// and to the records that a FileLog expects. Given the "cbor" feature, we use CBOR for serialization.
+pub trait FileLogRecordMarshaler<E>
+where
+    E: DeserializeOwned + Serialize,
+{
+    /// Provide a key we can use for the purposes of log compaction.
+    /// A key would generally comprise and event type value held in
+    /// the high bits, and the entity id in the lower bits.
+    fn to_compaction_key(record: &Record<E>) -> Option<Key>;
+
+    /// Extract an entity id from a consumer record.
+    fn to_entity_id(record: &ConsumerRecord) -> Option<EntityId>;
+
+    #[cfg(feature = "cbor")]
+    fn record(&self, record: ConsumerRecord) -> Option<Record<E>> {
+        let entity_id = Self::to_entity_id(&record)?;
+        ciborium::de::from_reader::<E, _>(&*record.value)
+            .map(|event| Record::new(entity_id, event))
+            .ok()
+    }
+
+    #[cfg(not(feature = "cbor"))]
     fn record(&self, record: ConsumerRecord) -> Option<Record<E>>;
+
+    #[cfg(feature = "cbor")]
+    fn producer_record(
+        &self,
+        topic: Topic,
+        record: Record<E>,
+    ) -> Option<(ProducerRecord, Record<E>)> {
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&record.event, &mut buf).ok()?;
+        Some((
+            ProducerRecord {
+                topic,
+                headers: vec![],
+                timestamp: None,
+                key: Self::to_compaction_key(&record)?,
+                value: buf,
+                partition: 0,
+            },
+            record,
+        ))
+    }
+
+    #[cfg(not(feature = "cbor"))]
     fn producer_record(
         &self,
         topic: Topic,
@@ -37,6 +81,7 @@ pub trait FileLogRecordMarshaler<E> {
 pub struct FileLogTopicAdapter<E, M>
 where
     M: FileLogRecordMarshaler<E>,
+    E: DeserializeOwned + Serialize,
 {
     commit_log: FileLog,
     consumer_group_name: String,
@@ -48,6 +93,7 @@ where
 impl<E, M> FileLogTopicAdapter<E, M>
 where
     M: FileLogRecordMarshaler<E>,
+    E: DeserializeOwned + Serialize,
 {
     pub fn new(
         commit_log: FileLog,
@@ -70,6 +116,7 @@ impl<E, M> RecordAdapter<E> for FileLogTopicAdapter<E, M>
 where
     for<'async_trait> E: Send + 'async_trait,
     M: FileLogRecordMarshaler<E> + Send + Sync,
+    E: DeserializeOwned + Serialize,
 {
     async fn produce_initial(
         &mut self,
@@ -151,12 +198,14 @@ mod tests {
     use akka_persistence_rs::{
         entity::EventSourcedBehavior, entity_manager::EntityManager, RecordMetadata,
     };
+    use serde::Deserialize;
     use streambed::commit_log::Header;
     use test_log::test;
     use tokio::{sync::mpsc, time};
 
     // Scaffolding
 
+    #[derive(Deserialize, Serialize)]
     struct MyEvent {
         value: String,
     }
@@ -192,9 +241,21 @@ mod tests {
     // of a record. Extracting/saving an entity id and determining other
     // metadata is also important. We would also expect to see any encryption
     // and decyption being performed by the marshaler.
+    // The example here overrides the default methods of the marshaler and
+    // effectively ignores the use of a key; just to prove that you really
+    // can lay out a record any way that you would like to. Note that keys
+    // are important though.
     struct MyEventMarshaler;
 
     impl FileLogRecordMarshaler<MyEvent> for MyEventMarshaler {
+        fn to_compaction_key(_record: &Record<MyEvent>) -> Option<Key> {
+            None
+        }
+
+        fn to_entity_id(_record: &ConsumerRecord) -> Option<EntityId> {
+            None
+        }
+
         fn record(&self, record: ConsumerRecord) -> Option<Record<MyEvent>> {
             let Header { value, .. } = record
                 .headers

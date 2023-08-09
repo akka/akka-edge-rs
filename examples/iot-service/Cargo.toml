@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 async-stream = { workspace = true }
 chrono = { workspace = true }
-ciborium = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 env_logger = { workspace = true }
 git-version = { workspace = true }
@@ -26,7 +25,9 @@ tokio-util = { workspace = true, features = ["codec"] }
 warp = { workspace = true }
 
 akka-persistence-rs = { path = "../../akka-persistence-rs" }
-akka-persistence-rs-filelog = { path = "../../akka-persistence-rs-filelog" }
+akka-persistence-rs-filelog = { path = "../../akka-persistence-rs-filelog", features = [
+    "cbor",
+] }
 
 [dev-dependencies]
 env_logger = { workspace = true }
