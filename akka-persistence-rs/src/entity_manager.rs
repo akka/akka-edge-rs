@@ -100,7 +100,7 @@ where
     pub fn new<A>(behavior: B, adapter: A, receiver: Receiver<Message<B::Command>>) -> Self
     where
         B::Command: Send,
-        B::State: Send,
+        B::State: Send + Sync,
         A: RecordAdapter<B::Event> + Send + 'static,
     {
         Self::with_capacity(behavior, adapter, receiver, DEFAULT_ACTIVE_STATE)
@@ -122,7 +122,7 @@ where
     ) -> Self
     where
         B::Command: Send,
-        B::State: Send,
+        B::State: Send + Sync,
         A: RecordAdapter<B::Event> + Send + 'static,
     {
         let join_handle = tokio::spawn(async move {
@@ -142,12 +142,17 @@ where
             while let Some(message) = receiver.recv().await {
                 // Source entity if we don't have it.
 
-                if !entities.contains_key(&message.entity_id) {
+                let mut state = entities.get(&message.entity_id);
+
+                if state.is_none() {
                     if let Ok(records) = adapter.produce(&message.entity_id).await {
                         tokio::pin!(records);
                         while let Some(record) = records.next().await {
                             Self::update_entity(&mut entities, record);
                         }
+                        state = entities.get(&message.entity_id);
+                    } else {
+                        continue;
                     }
                 }
 
@@ -159,9 +164,7 @@ where
                 };
                 let mut effect = B::for_command(
                     &context,
-                    entities
-                        .get(&context.entity_id)
-                        .unwrap_or(&B::State::default()),
+                    state.unwrap_or(&B::State::default()),
                     message.command,
                 );
                 let result = effect
