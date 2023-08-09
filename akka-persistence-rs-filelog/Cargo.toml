@@ -1,0 +1,24 @@
+[package]
+name = "akka-persistence-rs-filelog"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-stream = { workspace = true }
+async-trait = { workspace = true }
+ciborium = { workspace = true, optional = true }
+serde = { workspace = true }
+streambed = { workspace = true }
+streambed-logged = { workspace = true }
+tokio-stream = { workspace = true }
+
+akka-persistence-rs = { path = "../akka-persistence-rs" }
+
+[dev-dependencies]
+env_logger = { workspace = true }
+test-log = { workspace = true }
+tokio = { workspace = true }
+
+[features]
+# Enable CBOR for serialization
+cbor = ["dep:ciborium"]

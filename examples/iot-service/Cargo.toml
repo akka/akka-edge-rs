@@ -1,0 +1,34 @@
+[package]
+name = "iot-service"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-stream = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+env_logger = { workspace = true }
+git-version = { workspace = true }
+hex = { workspace = true }
+humantime = { workspace = true }
+log = { workspace = true }
+postcard = { workspace = true, default-features = false, features = [
+    "use-std",
+] }
+scopeguard = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+streambed = { workspace = true }
+streambed-logged = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true, features = ["codec"] }
+warp = { workspace = true }
+
+akka-persistence-rs = { path = "../../akka-persistence-rs" }
+akka-persistence-rs-filelog = { path = "../../akka-persistence-rs-filelog", features = [
+    "cbor",
+] }
+
+[dev-dependencies]
+env_logger = { workspace = true }
+test-log = { workspace = true }
