@@ -7,9 +7,9 @@ to an append log. A simple HTTP API is provided to query and scan the commit log
 is the use of the Akka Persistence Entity Manager in place of the `Database` struct that
 the Streambed example uses.
 
-The service is not a complete example given that encryption has been left out so
-that the example remains simple. Encryption should normally be applied to data
-at rest (persisted by the commit log) and in flight (http and UDP).
+The service is a complete example and includes encryption. Encryption should normally be applied to data
+at rest (persisted by the commit log) and in flight (http and UDP). For simplicity, we apply encryption
+to the commit log data, but not http and UDP.
 
 Running
 ---
@@ -17,9 +17,14 @@ Running
 To run via cargo, first `cd` into this directory and then:
 
 ```
+mkdir -p /tmp/iot-service/var/lib/confidant
+chmod 700 /tmp/iot-service/var/lib/confidant
 mkdir -p /tmp/iot-service/var/lib/logged
+echo -n "01234567890123456789012345678912some-secret-id" | \
 RUST_LOG=debug cargo run -- \
-  --cl-root-path=/tmp/iot-service/var/lib/logged
+  --cl-root-path=/tmp/iot-service/var/lib/logged \
+  --ss-role-id="iot-service" \
+  --ss-root-path=/tmp/iot-service/var/lib/confidant
 ```
 
 You should now be able to query for the current state of a temperature sensor:
@@ -67,15 +72,15 @@ When it has finished, you can observe that they are two log files for our topic 
 ```
 ls -al /tmp/iot-service/var/lib/logged
 
-drwxr-xr-x  4 huntc  wheel  128 14 Feb 14:31 .
-drwxr-xr-x  3 huntc  wheel   96 14 Feb 10:49 ..
--rw-r--r--  1 huntc  wheel  495 14 Feb 14:31 temperature
--rw-r--r--  1 huntc  wheel  330 14 Feb 14:31 temperature.history
+drwxr-xr-x  4 huntc  wheel    128 Aug 10 12:04 .
+drwxr-xr-x  4 huntc  wheel    128 Aug 10 12:02 ..
+-rw-r--r--  1 huntc  wheel  42444 Aug 10 12:04 temperature
+-rw-r--r--  1 huntc  wheel    540 Aug 10 12:04 temperature.history
 ```
 
-The `history` file contains the compacted log. As each record is 33 bytes, this means
-that compaction retained the last 10 records (330 bytes). The active file, or `temperature`,
-contains 15 additional records that continued to be written while compaction was
+The `history` file contains the compacted log. As each record is 54 bytes, this means
+that compaction retained the last 10 records (540 bytes). The active file, or `temperature`,
+contains several hundred records that continued to be written while compaction was
 in progress. The compactor is designed to avoid back-pressuring the production of 
 records. That said, if the production of events overwhelms compaction then
 it will back-pressure on the producer. It is up to you, as the application developer,

@@ -5,18 +5,22 @@ use async_stream::stream;
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{io, marker::PhantomData, pin::Pin};
-use streambed::commit_log::{
-    CommitLog, ConsumerRecord, Key, ProducerRecord, Subscription, Topic, TopicRef,
+use streambed::{
+    commit_log::{CommitLog, ConsumerRecord, Key, ProducerRecord, Subscription, Topic, TopicRef},
+    secret_store::SecretStore,
 };
-use streambed_logged::FileLog;
 use tokio_stream::{Stream, StreamExt};
 
 /// Provides the ability to transform the the memory representation of Akka Persistence records from
-/// and to the records that a FileLog expects. Given the "cbor" feature, we use CBOR for serialization.
-pub trait FileLogRecordMarshaler<E>
+/// and to the records that a CommitLog expects. Given the "cbor" feature, we use CBOR for serialization.
+/// Encryption/decryption to commit log records is also applied. Therefore a secret store is expected.
+#[async_trait]
+pub trait CommitLogRecordMarshaler<E>
 where
-    E: DeserializeOwned + Serialize,
+    for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
+    type SecretStore: SecretStore;
+
     /// Provide a key we can use for the purposes of log compaction.
     /// A key would generally comprise and event type value held in
     /// the high bits, and the entity id in the lower bits.
@@ -25,31 +29,53 @@ where
     /// Extract an entity id from a consumer record.
     fn to_entity_id(record: &ConsumerRecord) -> Option<EntityId>;
 
+    /// Return a reference to a secret store for encryption/decryption.
+    fn secret_store(&self) -> &Self::SecretStore;
+
+    /// Return a path to use for looking up secrets with respect to
+    /// an entity being encrypted/decrypted.
+    fn secret_path(&self, entity_id: &EntityId) -> String;
+
     #[cfg(feature = "cbor")]
-    fn record(&self, record: ConsumerRecord) -> Option<Record<E>> {
+    async fn record(&self, mut record: ConsumerRecord) -> Option<Record<E>> {
         let entity_id = Self::to_entity_id(&record)?;
-        ciborium::de::from_reader::<E, _>(&*record.value)
-            .map(|event| Record::new(entity_id, event))
-            .ok()
+        streambed::decrypt_buf(
+            self.secret_store(),
+            &self.secret_path(&entity_id),
+            &mut record.value,
+            |value| ciborium::de::from_reader(value),
+        )
+        .await
+        .map(|event| Record::new(entity_id, event))
     }
 
     #[cfg(not(feature = "cbor"))]
-    fn record(&self, record: ConsumerRecord) -> Option<Record<E>>;
+    async fn record(&self, record: ConsumerRecord) -> Option<Record<E>>;
 
     #[cfg(feature = "cbor")]
-    fn producer_record(
+    async fn producer_record(
         &self,
         topic: Topic,
         record: Record<E>,
     ) -> Option<(ProducerRecord, Record<E>)> {
-        let mut buf = Vec::new();
-        ciborium::ser::into_writer(&record.event, &mut buf).ok()?;
+        let key = Self::to_compaction_key(&record)?;
+        let buf = streambed::encrypt_struct(
+            self.secret_store(),
+            &self.secret_path(&record.entity_id),
+            |event| {
+                let mut buf = Vec::new();
+                ciborium::ser::into_writer(event, &mut buf).map(|_| buf)
+            },
+            rand::thread_rng,
+            &record.event,
+        )
+        .await?;
         Some((
             ProducerRecord {
                 topic,
                 headers: vec![],
                 timestamp: None,
-                key: Self::to_compaction_key(&record)?,
+                key,
                 value: buf,
                 partition: 0,
             },
@@ -58,49 +84,46 @@ where
     }
 
     #[cfg(not(feature = "cbor"))]
-    fn producer_record(
+    async fn producer_record(
         &self,
         topic: Topic,
         record: Record<E>,
     ) -> Option<(ProducerRecord, Record<E>)>;
 }
 
-/// Adapts a Streambed FileLog for use with Akka Persistence.
-/// This adapter retains an instance of a FileLog and is
+/// Adapts a Streambed CommitLog for use with Akka Persistence.
+/// This adapter retains an instance of a CommitLog and is
 /// associated with a specific topic. A topic maps one-to-one
 /// with a entity type i.e. many entity instances are held
 /// within one topic.
 ///
-/// As FileLog is intended for use at the edge, we assume
+/// As CommitLog is intended for use at the edge, we assume
 /// that all entities will be event sourced into memory.
 ///
-/// Developers are required to provide implementations of [FileLogRecordMarshaler]
+/// Developers are required to provide implementations of [CommitLogRecordMarshaler]
 /// for bytes and records i.e. deserialization/decryption and
-/// serialization/encryption respectively, along with FileLog's
+/// serialization/encryption respectively, along with CommitLog's
 /// use of keys for compaction including the storage of entities.
-pub struct FileLogTopicAdapter<E, M>
+pub struct CommitLogTopicAdapter<CL, E, M>
 where
-    M: FileLogRecordMarshaler<E>,
-    E: DeserializeOwned + Serialize,
+    CL: CommitLog,
+    M: CommitLogRecordMarshaler<E>,
+    for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
-    commit_log: FileLog,
+    commit_log: CL,
     consumer_group_name: String,
     marshaller: M,
     topic: Topic,
     phantom: PhantomData<E>,
 }
 
-impl<E, M> FileLogTopicAdapter<E, M>
+impl<CL, E, M> CommitLogTopicAdapter<CL, E, M>
 where
-    M: FileLogRecordMarshaler<E>,
-    E: DeserializeOwned + Serialize,
+    CL: CommitLog,
+    M: CommitLogRecordMarshaler<E>,
+    for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
-    pub fn new(
-        commit_log: FileLog,
-        marshaller: M,
-        consumer_group_name: &str,
-        topic: TopicRef,
-    ) -> Self {
+    pub fn new(commit_log: CL, marshaller: M, consumer_group_name: &str, topic: TopicRef) -> Self {
         Self {
             commit_log,
             consumer_group_name: consumer_group_name.into(),
@@ -112,11 +135,11 @@ where
 }
 
 #[async_trait]
-impl<E, M> RecordAdapter<E> for FileLogTopicAdapter<E, M>
+impl<CL, E, M> RecordAdapter<E> for CommitLogTopicAdapter<CL, E, M>
 where
-    for<'async_trait> E: Send + 'async_trait,
-    M: FileLogRecordMarshaler<E> + Send + Sync,
-    E: DeserializeOwned + Serialize,
+    CL: CommitLog,
+    M: CommitLogRecordMarshaler<E> + Send + Sync,
+    for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
     async fn produce_initial(
         &mut self,
@@ -145,7 +168,7 @@ where
                 while let Some(record) = records.next().await {
                     if record.offset <= last_offset {
                         let is_last_offset = record.offset == last_offset;
-                        if let Some(record) = marshaller.record(record) {
+                        if let Some(record) = marshaller.record(record).await {
                             yield record;
                             if !is_last_offset {
                                 continue;
@@ -171,6 +194,7 @@ where
         let (producer_record, record) = self
             .marshaller
             .producer_record(self.topic.clone(), record)
+            .await
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::Other,
@@ -199,7 +223,11 @@ mod tests {
         entity::EventSourcedBehavior, entity_manager::EntityManager, RecordMetadata,
     };
     use serde::Deserialize;
-    use streambed::commit_log::Header;
+    use streambed::{
+        commit_log::Header,
+        secret_store::{AppRoleAuthReply, Error, GetSecretReply, SecretData, UserPassAuthReply},
+    };
+    use streambed_logged::FileLog;
     use test_log::test;
     use tokio::{sync::mpsc, time};
 
@@ -242,21 +270,80 @@ mod tests {
     // metadata is also important. We would also expect to see any encryption
     // and decyption being performed by the marshaler.
     // The example here overrides the default methods of the marshaler and
-    // effectively ignores the use of a key; just to prove that you really
-    // can lay out a record any way that you would like to. Note that keys
+    // effectively ignores the use of a secret key; just to prove that you really
+    // can lay out a record any way that you would like to. Note that secret keys
     // are important though.
+
+    #[derive(Clone)]
+    struct NoopSecretStore;
+
+    #[async_trait]
+    impl SecretStore for NoopSecretStore {
+        async fn approle_auth(
+            &self,
+            _role_id: &str,
+            _secret_id: &str,
+        ) -> Result<AppRoleAuthReply, Error> {
+            panic!("should not be called")
+        }
+
+        async fn create_secret(
+            &self,
+            _secret_path: &str,
+            _secret_data: SecretData,
+        ) -> Result<(), Error> {
+            panic!("should not be called")
+        }
+
+        async fn get_secret(&self, _secret_path: &str) -> Result<Option<GetSecretReply>, Error> {
+            panic!("should not be called")
+        }
+
+        async fn token_auth(&self, _token: &str) -> Result<(), Error> {
+            panic!("should not be called")
+        }
+
+        async fn userpass_auth(
+            &self,
+            _username: &str,
+            _password: &str,
+        ) -> Result<UserPassAuthReply, Error> {
+            panic!("should not be called")
+        }
+
+        async fn userpass_create_update_user(
+            &self,
+            _current_username: &str,
+            _username: &str,
+            _password: &str,
+        ) -> Result<(), Error> {
+            panic!("should not be called")
+        }
+    }
+
     struct MyEventMarshaler;
 
-    impl FileLogRecordMarshaler<MyEvent> for MyEventMarshaler {
+    #[async_trait]
+    impl CommitLogRecordMarshaler<MyEvent> for MyEventMarshaler {
+        type SecretStore = NoopSecretStore;
+
         fn to_compaction_key(_record: &Record<MyEvent>) -> Option<Key> {
-            None
+            panic!("should not be called")
         }
 
         fn to_entity_id(_record: &ConsumerRecord) -> Option<EntityId> {
-            None
+            panic!("should not be called")
         }
 
-        fn record(&self, record: ConsumerRecord) -> Option<Record<MyEvent>> {
+        fn secret_store(&self) -> &Self::SecretStore {
+            panic!("should not be called")
+        }
+
+        fn secret_path(&self, _entity_id: &EntityId) -> String {
+            panic!("should not be called")
+        }
+
+        async fn record(&self, record: ConsumerRecord) -> Option<Record<MyEvent>> {
             let Header { value, .. } = record
                 .headers
                 .into_iter()
@@ -273,7 +360,7 @@ mod tests {
             })
         }
 
-        fn producer_record(
+        async fn producer_record(
             &self,
             topic: Topic,
             record: Record<MyEvent>,
@@ -308,7 +395,7 @@ mod tests {
         let commit_log = FileLog::new(logged_dir);
 
         let marshaller = MyEventMarshaler;
-        let mut adapter = FileLogTopicAdapter::new(
+        let mut adapter = CommitLogTopicAdapter::new(
             commit_log.clone(),
             marshaller,
             "some-consumer",
@@ -387,7 +474,7 @@ mod tests {
         let marshaller = MyEventMarshaler;
 
         let file_log_topic_adapter =
-            FileLogTopicAdapter::new(commit_log, marshaller, "some-consumer", "some-topic");
+            CommitLogTopicAdapter::new(commit_log, marshaller, "some-consumer", "some-topic");
 
         let my_behavior = MyBehavior;
 
