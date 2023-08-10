@@ -6,9 +6,11 @@
 //! The entities will recover their state from a stream of events.
 
 use async_trait::async_trait;
+use lru::LruCache;
 use std::io;
+use std::marker::PhantomData;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
-use std::{collections::HashMap, marker::PhantomData};
 use tokio::sync::mpsc::Receiver;
 use tokio::task::{JoinError, JoinHandle};
 use tokio_stream::{Stream, StreamExt};
@@ -43,7 +45,7 @@ pub trait RecordAdapter<E> {
 
 /// The default amount of state (instances of an entity) that we
 /// retain at any one time.
-pub const DEFAULT_ACTIVE_STATE: usize = 1;
+pub const DEFAULT_ACTIVE_STATE: usize = 10;
 
 /// Manages the lifecycle of entities given a specific behavior.
 /// Entity managers are established given a source of events associated
@@ -70,7 +72,7 @@ where
         self.join_handle.await
     }
 
-    fn update_entity(entities: &mut HashMap<EntityId, B::State>, record: Record<B::Event>)
+    fn update_entity(entities: &mut LruCache<EntityId, B::State>, record: Record<B::Event>)
     where
         B::State: Default,
     {
@@ -79,12 +81,10 @@ where
             let context = Context {
                 entity_id: record.entity_id.clone(),
             };
-            let state = entities
-                .entry(record.entity_id)
-                .or_insert_with(B::State::default);
+            let state = entities.get_or_insert_mut(record.entity_id, B::State::default);
             B::on_event(&context, state, &record.event);
         } else {
-            entities.remove(&record.entity_id);
+            entities.pop(&record.entity_id);
         }
     }
 }
@@ -129,7 +129,7 @@ where
         let join_handle = tokio::spawn(async move {
             // Source our initial events and populate our internal entities map.
 
-            let mut entities = HashMap::with_capacity(capacity);
+            let mut entities = LruCache::new(NonZeroUsize::new(capacity).unwrap());
 
             if let Ok(records) = adapter.produce_initial().await {
                 tokio::pin!(records);
@@ -183,7 +183,7 @@ where
                     )
                     .await;
                 if result.is_err() {
-                    entities.remove(&context.entity_id);
+                    entities.pop(&context.entity_id);
                 }
             }
         });
