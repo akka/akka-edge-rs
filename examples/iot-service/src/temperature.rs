@@ -6,9 +6,11 @@ use akka_persistence_rs::{
     entity_manager::EntityManager,
     EntityId, Message, Record,
 };
-use akka_persistence_rs_filelog::{FileLogRecordMarshaler, FileLogTopicAdapter};
+use akka_persistence_rs_commitlog::{CommitLogRecordMarshaler, CommitLogTopicAdapter};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use streambed::commit_log::Key;
+use streambed_confidant::FileSecretStore;
 use streambed_logged::{compaction::NthKeyBasedRetention, FileLog};
 use tokio::{
     sync::{mpsc, oneshot},
@@ -92,7 +94,10 @@ impl EventSourcedBehavior for Behavior {
 // Marshalers can be completely overidden to serialize events and encode
 // keys in any way required.
 
-struct RecordMarshaler;
+struct RecordMarshaler {
+    events_key_secret_path: String,
+    secret_store: FileSecretStore,
+}
 
 // Our event keys will occupy the top 12 bits of the key, meaning
 // that we can have 4K types of record. We use 32 of the bottom 52
@@ -105,7 +110,10 @@ struct RecordMarshaler;
 const EVENT_TYPE_BIT_SHIFT: usize = 52;
 const EVENT_ID_BIT_MASK: u64 = 0xFFFFFFFF;
 
-impl FileLogRecordMarshaler<Event> for RecordMarshaler {
+#[async_trait]
+impl CommitLogRecordMarshaler<Event> for RecordMarshaler {
+    type SecretStore = FileSecretStore;
+
     fn to_compaction_key(record: &Record<Event>) -> Option<Key> {
         let entity_id = record.entity_id.parse::<u32>().ok()?;
         let Event::TemperatureRead { .. } = record.event;
@@ -116,11 +124,21 @@ impl FileLogRecordMarshaler<Event> for RecordMarshaler {
         let entity_id = (record.key & EVENT_ID_BIT_MASK) as u32;
         Some(entity_id.to_string())
     }
+
+    fn secret_store(&self) -> &Self::SecretStore {
+        &self.secret_store
+    }
+
+    fn secret_path(&self, _entity_id: &EntityId) -> String {
+        self.events_key_secret_path.clone()
+    }
 }
 
 /// Manage the temperature sensor.
 pub async fn task(
-    mut cl: FileLog,
+    mut commit_log: FileLog,
+    secret_store: FileSecretStore,
+    events_key_secret_path: String,
     command_receiver: mpsc::Receiver<Message<Command>>,
 ) -> Result<(), JoinError> {
     // We register a compaction strategy for our topic such that when we use up
@@ -128,15 +146,23 @@ pub async fn task(
     // events are removed. In our scenario, unwanted events can be removed when
     // the exceed MAX_HISTORY_EVENTS as we do not have a requirement to ever
     // return more than that.
-    cl.register_compaction(
-        EVENTS_TOPIC.to_string(),
-        NthKeyBasedRetention::new(MAX_TOPIC_COMPACTION_KEYS, MAX_HISTORY_EVENTS),
-    )
-    .await
-    .unwrap();
+    commit_log
+        .register_compaction(
+            EVENTS_TOPIC.to_string(),
+            NthKeyBasedRetention::new(MAX_TOPIC_COMPACTION_KEYS, MAX_HISTORY_EVENTS),
+        )
+        .await
+        .unwrap();
 
-    let file_log_topic_adapter =
-        FileLogTopicAdapter::new(cl, RecordMarshaler, "iot-service", EVENTS_TOPIC);
+    let file_log_topic_adapter = CommitLogTopicAdapter::new(
+        commit_log,
+        RecordMarshaler {
+            events_key_secret_path,
+            secret_store,
+        },
+        "iot-service",
+        EVENTS_TOPIC,
+    );
 
     EntityManager::new(Behavior, file_log_topic_adapter, command_receiver)
         .join()
