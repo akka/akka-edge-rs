@@ -13,9 +13,9 @@ use crate::effect::Effect;
 use crate::EntityId;
 
 /// A context provides information about the environment that hosts a specific entity.
-pub struct Context {
+pub struct Context<'a> {
     /// The entity's unique identifier.
-    pub entity_id: EntityId,
+    pub entity_id: &'a EntityId,
 }
 
 /// An entity's behavior is the basic unit of modelling aspects of an Akka-Persistence-based application and

@@ -29,7 +29,7 @@ where
         behavior: &B,
         adapter: &mut (dyn RecordAdapter<B::Event> + Send),
         entities: &mut LruCache<EntityId, B::State>,
-        entity_id: EntityId,
+        entity_id: &EntityId,
         prev_result: Result,
         update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
                   + Send),
@@ -56,7 +56,7 @@ where
         behavior: &B,
         adapter: &mut (dyn RecordAdapter<B::Event> + Send),
         entities: &mut LruCache<EntityId, B::State>,
-        entity_id: EntityId,
+        entity_id: &EntityId,
         prev_result: Result,
         update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
                   + Send),
@@ -67,7 +67,7 @@ where
                 behavior,
                 adapter,
                 entities,
-                entity_id.clone(),
+                entity_id,
                 prev_result,
                 update_entity,
             )
@@ -140,7 +140,7 @@ where
         _behavior: &B,
         adapter: &mut (dyn RecordAdapter<B::Event> + Send),
         entities: &mut LruCache<EntityId, B::State>,
-        entity_id: EntityId,
+        entity_id: &EntityId,
         prev_result: Result,
         update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
                   + Send),
@@ -148,7 +148,7 @@ where
         if prev_result.is_ok() {
             if let Some(event) = self.event.take() {
                 let record = Record {
-                    entity_id,
+                    entity_id: entity_id.clone(),
                     event,
                     metadata: crate::RecordMetadata {
                         deletion_event: self.deletion_event,
@@ -223,7 +223,7 @@ where
         _behavior: &B,
         _adapter: &mut (dyn RecordAdapter<B::Event> + Send),
         _entities: &mut LruCache<EntityId, B::State>,
-        _entity_id: EntityId,
+        _entity_id: &EntityId,
         prev_result: Result,
         _update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
                   + Send),
@@ -275,14 +275,14 @@ where
         behavior: &B,
         _adapter: &mut (dyn RecordAdapter<B::Event> + Send),
         entities: &mut LruCache<EntityId, B::State>,
-        entity_id: EntityId,
+        entity_id: &EntityId,
         prev_result: Result,
         _update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
                   + Send),
     ) -> Result {
         let f = self.f.take();
         if let Some(f) = f {
-            f(behavior, entities.get(&entity_id), prev_result).await
+            f(behavior, entities.get(entity_id), prev_result).await
         } else {
             Ok(())
         }
@@ -333,7 +333,7 @@ where
         _behavior: &B,
         _adapter: &mut (dyn RecordAdapter<B::Event> + Send),
         _entities: &mut LruCache<EntityId, B::State>,
-        _entity_id: EntityId,
+        _entity_id: &EntityId,
         _prev_result: Result,
         _update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
                   + Send),

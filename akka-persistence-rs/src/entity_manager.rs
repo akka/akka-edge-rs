@@ -75,9 +75,9 @@ where
         if !record.metadata.deletion_event {
             // Apply an event to state, creating the entity entry if necessary.
             let context = Context {
-                entity_id: record.entity_id.clone(),
+                entity_id: &record.entity_id,
             };
-            let state = entities.get_or_insert_mut(record.entity_id, B::State::default);
+            let state = entities.get_or_insert_mut(record.entity_id.clone(), B::State::default);
             B::on_event(&context, state, &record.event);
         } else {
             entities.pop(&record.entity_id);
@@ -139,10 +139,8 @@ where
                     Self::update_entity(&mut entities, record);
                 }
                 for (entity_id, state) in entities.iter() {
-                    let context = Context {
-                        entity_id: entity_id.clone(),
-                    };
-                    behavior.on_recovery_completed(&context, &state).await;
+                    let context = Context { entity_id };
+                    behavior.on_recovery_completed(&context, state).await;
                 }
             } else {
                 // A problem sourcing initial events is regarded as fatal.
@@ -164,10 +162,10 @@ where
                         }
                         state = entities.get(&message.entity_id);
                         let context = Context {
-                            entity_id: message.entity_id.clone(),
+                            entity_id: &message.entity_id,
                         };
                         behavior
-                            .on_recovery_completed(&context, &state.unwrap_or(&B::State::default()))
+                            .on_recovery_completed(&context, state.unwrap_or(&B::State::default()))
                             .await;
                     } else {
                         continue;
@@ -178,7 +176,7 @@ where
                 // Effects may emit events that will update state on success.
 
                 let context = Context {
-                    entity_id: message.entity_id,
+                    entity_id: &message.entity_id,
                 };
                 let mut effect = B::for_command(
                     &context,
@@ -190,13 +188,13 @@ where
                         &behavior,
                         &mut adapter,
                         &mut entities,
-                        context.entity_id.clone(),
+                        context.entity_id,
                         Ok(()),
                         &mut |entities, record| Self::update_entity(entities, record),
                     )
                     .await;
                 if result.is_err() {
-                    entities.pop(&context.entity_id);
+                    entities.pop(context.entity_id);
                 }
             }
         });
