@@ -138,9 +138,14 @@ where
                 while let Some(record) = records.next().await {
                     Self::update_entity(&mut entities, record);
                 }
+                for (entity_id, state) in entities.iter() {
+                    let context = Context {
+                        entity_id: entity_id.clone(),
+                    };
+                    behavior.on_recovery_completed(&context, &state).await;
+                }
             } else {
                 // A problem sourcing initial events is regarded as fatal.
-
                 return;
             }
 
@@ -158,6 +163,12 @@ where
                             Self::update_entity(&mut entities, record);
                         }
                         state = entities.get(&message.entity_id);
+                        let context = Context {
+                            entity_id: message.entity_id.clone(),
+                        };
+                        behavior
+                            .on_recovery_completed(&context, &state.unwrap_or(&B::State::default()))
+                            .await;
                     } else {
                         continue;
                     }
@@ -238,9 +249,12 @@ mod tests {
     }
 
     struct TempSensorBehavior {
+        recovered_1: Arc<Notify>,
+        recovered_2: Arc<Notify>,
         updated: Arc<Notify>,
     }
 
+    #[async_trait]
     impl EventSourcedBehavior for TempSensorBehavior {
         type State = TempState;
 
@@ -292,6 +306,15 @@ mod tests {
                 TempEvent::Registered => state.registered = true,
                 TempEvent::TemperatureUpdated { temp } => state.temp = *temp,
             }
+        }
+
+        async fn on_recovery_completed(&self, context: &Context, state: &Self::State) {
+            if context.entity_id == "id-1" {
+                self.recovered_1.notify_one();
+            } else {
+                self.recovered_2.notify_one();
+            };
+            println!("Recovered {} with {}!", context.entity_id, state.temp);
         }
     }
 
@@ -345,9 +368,13 @@ mod tests {
     async fn new_manager_with_one_update_and_a_message_reply() {
         // Set up the behavior and entity manager.
 
+        let temp_sensor_recovered_id_1 = Arc::new(Notify::new());
+        let temp_sensor_recovered_id_2 = Arc::new(Notify::new());
         let temp_sensor_updated = Arc::new(Notify::new());
 
         let temp_sensor_behavior = TempSensorBehavior {
+            recovered_1: temp_sensor_recovered_id_1.clone(),
+            recovered_2: temp_sensor_recovered_id_2.clone(),
             updated: temp_sensor_updated.clone(),
         };
 
@@ -382,6 +409,7 @@ mod tests {
             .await
             .is_ok());
 
+        temp_sensor_recovered_id_1.notified().await;
         temp_sensor_updated.notified().await;
 
         let (reply_to, reply) = oneshot::channel();
@@ -405,6 +433,8 @@ mod tests {
             .await
             .is_ok());
 
+        temp_sensor_updated.notified().await;
+
         // Delete the entity
 
         assert!(temp_sensor
@@ -420,6 +450,8 @@ mod tests {
             .await
             .is_ok());
 
+        temp_sensor_recovered_id_2.notified().await;
+
         // We test eviction by querying for id-1 again. This should
         // fail as we have an empty produce method in our adapter.
 
@@ -432,6 +464,8 @@ mod tests {
             .await
             .is_ok());
         assert!(reply.await.is_err());
+
+        temp_sensor_recovered_id_1.notified().await;
 
         // Drop our command sender so that the entity manager stops.
 
