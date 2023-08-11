@@ -185,9 +185,20 @@ where
 
     async fn produce(
         &mut self,
-        _entity_id: &EntityId,
+        entity_id: &EntityId,
     ) -> io::Result<Pin<Box<dyn Stream<Item = Record<E>> + Send + 'async_trait>>> {
-        Ok(Box::pin(tokio_stream::empty()))
+        let records = self.produce_initial().await;
+        if let Ok(mut records) = records {
+            Ok(Box::pin(stream!({
+                while let Some(record) = records.next().await {
+                    if &record.entity_id == entity_id {
+                        yield record;
+                    }
+                }
+            })))
+        } else {
+            Ok(Box::pin(tokio_stream::empty()))
+        }
     }
 
     async fn process(&mut self, record: Record<E>) -> io::Result<Record<E>> {
@@ -437,6 +448,18 @@ mod tests {
             .unwrap();
         assert_eq!(record.entity_id, entity_id);
 
+        // Produce to a different entity id, so that we can test out the filtering next.
+
+        adapter
+            .process(Record::new(
+                "some-other-entity-id",
+                MyEvent {
+                    value: "third-event".to_string(),
+                },
+            ))
+            .await
+            .unwrap();
+
         // Wait until the number of records reported as being written is the number
         // that we have produced. We should then return those events that have been
         // produced.
@@ -446,14 +469,14 @@ mod tests {
                 .offsets("some-topic".to_string(), 0)
                 .await
                 .map(|lo| lo.end_offset);
-            if last_offset == Some(2) {
+            if last_offset == Some(3) {
                 break;
             }
             time::sleep(Duration::from_millis(100)).await;
         }
 
         {
-            let mut records = adapter.produce_initial().await.unwrap();
+            let mut records = adapter.produce(&entity_id).await.unwrap();
 
             let record = records.next().await.unwrap();
             assert_eq!(record.entity_id, entity_id);

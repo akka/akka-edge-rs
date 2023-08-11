@@ -43,10 +43,6 @@ pub trait RecordAdapter<E> {
     async fn process(&mut self, record: Record<E>) -> io::Result<Record<E>>;
 }
 
-/// The default amount of state (instances of an entity) that we
-/// retain at any one time.
-pub const DEFAULT_ACTIVE_STATE: usize = 10;
-
 /// Manages the lifecycle of entities given a specific behavior.
 /// Entity managers are established given a source of events associated
 /// with an entity type. That source is consumed by subsequently telling
@@ -104,7 +100,13 @@ where
         B::State: Send + Sync,
         A: RecordAdapter<B::Event> + Send + 'static,
     {
-        Self::with_capacity(behavior, adapter, receiver, DEFAULT_ACTIVE_STATE)
+        const DEFAULT_ACTIVE_STATE: usize = 10;
+        Self::with_capacity(
+            behavior,
+            adapter,
+            receiver,
+            NonZeroUsize::new(DEFAULT_ACTIVE_STATE).unwrap(),
+        )
     }
 
     /// Establish a new entity manager with capacity for a number of instances
@@ -119,7 +121,7 @@ where
         behavior: B,
         mut adapter: A,
         mut receiver: Receiver<Message<B::Command>>,
-        capacity: usize,
+        capacity: NonZeroUsize,
     ) -> Self
     where
         B::Command: Send,
@@ -129,7 +131,7 @@ where
         let join_handle = tokio::spawn(async move {
             // Source our initial events and populate our internal entities map.
 
-            let mut entities = LruCache::new(NonZeroUsize::new(capacity).unwrap());
+            let mut entities = LruCache::new(capacity);
 
             if let Ok(records) = adapter.produce_initial().await {
                 tokio::pin!(records);
@@ -360,10 +362,11 @@ mod tests {
 
         let (temp_sensor, temp_sensor_receiver) = mpsc::channel(10);
 
-        EntityManager::new(
+        EntityManager::with_capacity(
             temp_sensor_behavior,
             temp_sensor_record_adapter,
             temp_sensor_receiver,
+            NonZeroUsize::new(1).unwrap(),
         );
 
         // Send a command to update the temperature and wait until it is done. We then wait
@@ -409,12 +412,26 @@ mod tests {
             .await
             .is_ok());
 
-        // Create another entity
+        // Create another entity. This should cause cache eviction as the cache is
+        // size for a capacity of 1 when we created the entity manager.
 
         assert!(temp_sensor
             .send(Message::new("id-2", TempCommand::Register,))
             .await
             .is_ok());
+
+        // We test eviction by querying for id-1 again. This should
+        // fail as we have an empty produce method in our adapter.
+
+        let (reply_to, reply) = oneshot::channel();
+        assert!(temp_sensor
+            .send(Message::new(
+                "id-1",
+                TempCommand::GetTemperature { reply_to }
+            ))
+            .await
+            .is_ok());
+        assert!(reply.await.is_err());
 
         // Drop our command sender so that the entity manager stops.
 
