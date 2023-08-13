@@ -1,10 +1,9 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, num::NonZeroUsize};
 
 use akka_persistence_rs::{
     effect::{emit_event, reply, unhandled, EffectExt},
     entity::EventSourcedBehavior,
-    entity_manager::EntityManager,
-    EntityId, Message, Record,
+    entity_manager, EntityId, Message, Record,
 };
 use akka_persistence_rs_commitlog::{CommitLogRecordMarshaler, CommitLogTopicAdapter};
 use async_trait::async_trait;
@@ -12,10 +11,7 @@ use serde::{Deserialize, Serialize};
 use streambed::commit_log::Key;
 use streambed_confidant::FileSecretStore;
 use streambed_logged::{compaction::NthKeyBasedRetention, FileLog};
-use tokio::{
-    sync::{mpsc, oneshot},
-    task::JoinError,
-};
+use tokio::sync::{mpsc, oneshot};
 
 const EVENTS_TOPIC: &str = "temperature";
 const MAX_HISTORY_EVENTS: usize = 10;
@@ -140,7 +136,7 @@ pub async fn task(
     secret_store: FileSecretStore,
     events_key_secret_path: String,
     command_receiver: mpsc::Receiver<Message<Command>>,
-) -> Result<(), JoinError> {
+) {
     // We register a compaction strategy for our topic such that when we use up
     // 64KB of disk space (the default), we will run compaction so that unwanted
     // events are removed. In our scenario, unwanted events can be removed when
@@ -164,7 +160,11 @@ pub async fn task(
         EVENTS_TOPIC,
     );
 
-    EntityManager::new(Behavior, file_log_topic_adapter, command_receiver)
-        .join()
-        .await
+    entity_manager::run(
+        Behavior,
+        file_log_topic_adapter,
+        command_receiver,
+        NonZeroUsize::new(10).unwrap(),
+    )
+    .await
 }

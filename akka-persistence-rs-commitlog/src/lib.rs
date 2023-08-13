@@ -227,12 +227,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs, time::Duration};
+    use std::{env, fs, num::NonZeroUsize, time::Duration};
 
     use super::*;
-    use akka_persistence_rs::{
-        entity::EventSourcedBehavior, entity_manager::EntityManager, RecordMetadata,
-    };
+    use akka_persistence_rs::{entity::EventSourcedBehavior, entity_manager, RecordMetadata};
     use serde::Deserialize;
     use streambed::{
         commit_log::Header,
@@ -503,6 +501,12 @@ mod tests {
 
         let (_, my_command_receiver) = mpsc::channel(10);
 
-        EntityManager::new(my_behavior, file_log_topic_adapter, my_command_receiver);
+        entity_manager::run(
+            my_behavior,
+            file_log_topic_adapter,
+            my_command_receiver,
+            NonZeroUsize::new(1).unwrap(),
+        )
+        .await;
     }
 }
