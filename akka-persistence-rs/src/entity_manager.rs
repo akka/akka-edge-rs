@@ -141,7 +141,15 @@ where
         let context = Context {
             entity_id: &record.entity_id,
         };
-        let state = entities.get_or_insert_mut(record.entity_id.clone(), B::State::default);
+        let state = if let Some(state) = entities.get_mut(&record.entity_id) {
+            state
+        } else {
+            // We're avoiding the use of get_or_insert so that we can avoid
+            // cloning the entity id unless necessary.
+            entities.push(record.entity_id.clone(), B::State::default());
+            entities.get_mut(&record.entity_id).unwrap()
+        };
+        // let state = entities.get_or_insert_mut(record.entity_id, B::State::default);
         B::on_event(&context, state, &record.event);
     } else {
         entities.pop(&record.entity_id);
