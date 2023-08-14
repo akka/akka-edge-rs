@@ -7,18 +7,21 @@
 //! entity, in contrast to commands. Event sourced entities may also process commands that do not change application state such
 //! as query commands for example.
 
+use async_trait::async_trait;
+
 use crate::effect::Effect;
 use crate::EntityId;
 
 /// A context provides information about the environment that hosts a specific entity.
-pub struct Context {
+pub struct Context<'a> {
     /// The entity's unique identifier.
-    pub entity_id: EntityId,
+    pub entity_id: &'a EntityId,
 }
 
 /// An entity's behavior is the basic unit of modelling aspects of an Akka-Persistence-based application and
 /// encapsulates how commands can be applied to state, including the emission of events. Events can
 /// also be applied to state in order to produce more state.
+#[async_trait]
 pub trait EventSourcedBehavior {
     /// The state managed by the entity.
     type State: Default;
@@ -42,4 +45,10 @@ pub trait EventSourcedBehavior {
     /// the next state. No side effects are to be performed. Can be used to replay
     /// events to attain a new state i.e. the major function of event sourcing.
     fn on_event(context: &Context, state: &mut Self::State, event: &Self::Event);
+
+    /// The entity will always receive a "recovery completed" signal, even if there
+    /// are no events sourced, or if it’s a new entity with a previously unused EntityId.
+    /// Any required side effects should be performed once recovery has completed by
+    /// overriding this method.
+    async fn on_recovery_completed(&self, _context: &Context, _state: &Self::State) {}
 }

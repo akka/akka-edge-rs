@@ -1,9 +1,9 @@
 //! Effects that are lazily performed as a result of performing a command
 //! of an entity. Effects can be chained with other effects.
 
-use std::{collections::HashMap, future::Future, io, marker::PhantomData};
-
 use async_trait::async_trait;
+use lru::LruCache;
+use std::{future::Future, io, marker::PhantomData};
 use tokio::sync::oneshot;
 
 use crate::{entity::EventSourcedBehavior, entity_manager::RecordAdapter, EntityId, Record};
@@ -28,10 +28,10 @@ where
         &mut self,
         behavior: &B,
         adapter: &mut (dyn RecordAdapter<B::Event> + Send),
-        entities: &mut HashMap<EntityId, B::State>,
-        entity_id: EntityId,
+        entities: &mut LruCache<EntityId, B::State>,
+        entity_id: &EntityId,
         prev_result: Result,
-        update_entity: &mut (dyn for<'a> FnMut(&'a mut HashMap<EntityId, B::State>, Record<B::Event>)
+        update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
                   + Send),
     ) -> Result;
 }
@@ -55,10 +55,10 @@ where
         &mut self,
         behavior: &B,
         adapter: &mut (dyn RecordAdapter<B::Event> + Send),
-        entities: &mut HashMap<EntityId, B::State>,
-        entity_id: EntityId,
+        entities: &mut LruCache<EntityId, B::State>,
+        entity_id: &EntityId,
         prev_result: Result,
-        update_entity: &mut (dyn for<'a> FnMut(&'a mut HashMap<EntityId, B::State>, Record<B::Event>)
+        update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
                   + Send),
     ) -> Result {
         let r = self
@@ -67,7 +67,7 @@ where
                 behavior,
                 adapter,
                 entities,
-                entity_id.clone(),
+                entity_id,
                 prev_result,
                 update_entity,
             )
@@ -139,16 +139,16 @@ where
         &mut self,
         _behavior: &B,
         adapter: &mut (dyn RecordAdapter<B::Event> + Send),
-        entities: &mut HashMap<EntityId, B::State>,
-        entity_id: EntityId,
+        entities: &mut LruCache<EntityId, B::State>,
+        entity_id: &EntityId,
         prev_result: Result,
-        update_entity: &mut (dyn for<'a> FnMut(&'a mut HashMap<EntityId, B::State>, Record<B::Event>)
+        update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
                   + Send),
     ) -> Result {
         if prev_result.is_ok() {
             if let Some(event) = self.event.take() {
                 let record = Record {
-                    entity_id,
+                    entity_id: entity_id.clone(),
                     event,
                     metadata: crate::RecordMetadata {
                         deletion_event: self.deletion_event,
@@ -222,10 +222,10 @@ where
         &mut self,
         _behavior: &B,
         _adapter: &mut (dyn RecordAdapter<B::Event> + Send),
-        _entities: &mut HashMap<EntityId, B::State>,
-        _entity_id: EntityId,
+        _entities: &mut LruCache<EntityId, B::State>,
+        _entity_id: &EntityId,
         prev_result: Result,
-        _update_entity: &mut (dyn for<'a> FnMut(&'a mut HashMap<EntityId, B::State>, Record<B::Event>)
+        _update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
                   + Send),
     ) -> Result {
         if prev_result.is_ok() {
@@ -274,15 +274,15 @@ where
         &mut self,
         behavior: &B,
         _adapter: &mut (dyn RecordAdapter<B::Event> + Send),
-        entities: &mut HashMap<EntityId, B::State>,
-        entity_id: EntityId,
+        entities: &mut LruCache<EntityId, B::State>,
+        entity_id: &EntityId,
         prev_result: Result,
-        _update_entity: &mut (dyn for<'a> FnMut(&'a mut HashMap<EntityId, B::State>, Record<B::Event>)
+        _update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
                   + Send),
     ) -> Result {
         let f = self.f.take();
         if let Some(f) = f {
-            f(behavior, entities.get(&entity_id), prev_result).await
+            f(behavior, entities.get(entity_id), prev_result).await
         } else {
             Ok(())
         }
@@ -332,10 +332,10 @@ where
         &mut self,
         _behavior: &B,
         _adapter: &mut (dyn RecordAdapter<B::Event> + Send),
-        _entities: &mut HashMap<EntityId, B::State>,
-        _entity_id: EntityId,
+        _entities: &mut LruCache<EntityId, B::State>,
+        _entity_id: &EntityId,
         _prev_result: Result,
-        _update_entity: &mut (dyn for<'a> FnMut(&'a mut HashMap<EntityId, B::State>, Record<B::Event>)
+        _update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
                   + Send),
     ) -> Result {
         Ok(())

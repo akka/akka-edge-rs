@@ -6,9 +6,11 @@
 //! The entities will recover their state from a stream of events.
 
 use async_trait::async_trait;
+use lru::LruCache;
 use std::io;
+use std::marker::PhantomData;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
-use std::{collections::HashMap, marker::PhantomData};
 use tokio::sync::mpsc::Receiver;
 use tokio::task::{JoinError, JoinHandle};
 use tokio_stream::{Stream, StreamExt};
@@ -41,10 +43,6 @@ pub trait RecordAdapter<E> {
     async fn process(&mut self, record: Record<E>) -> io::Result<Record<E>>;
 }
 
-/// The default amount of state (instances of an entity) that we
-/// retain at any one time.
-pub const DEFAULT_ACTIVE_STATE: usize = 1;
-
 /// Manages the lifecycle of entities given a specific behavior.
 /// Entity managers are established given a source of events associated
 /// with an entity type. That source is consumed by subsequently telling
@@ -70,21 +68,19 @@ where
         self.join_handle.await
     }
 
-    fn update_entity(entities: &mut HashMap<EntityId, B::State>, record: Record<B::Event>)
+    fn update_entity(entities: &mut LruCache<EntityId, B::State>, record: Record<B::Event>)
     where
         B::State: Default,
     {
         if !record.metadata.deletion_event {
             // Apply an event to state, creating the entity entry if necessary.
             let context = Context {
-                entity_id: record.entity_id.clone(),
+                entity_id: &record.entity_id,
             };
-            let state = entities
-                .entry(record.entity_id)
-                .or_insert_with(B::State::default);
+            let state = entities.get_or_insert_mut(record.entity_id.clone(), B::State::default);
             B::on_event(&context, state, &record.event);
         } else {
-            entities.remove(&record.entity_id);
+            entities.pop(&record.entity_id);
         }
     }
 }
@@ -104,7 +100,13 @@ where
         B::State: Send + Sync,
         A: RecordAdapter<B::Event> + Send + 'static,
     {
-        Self::with_capacity(behavior, adapter, receiver, DEFAULT_ACTIVE_STATE)
+        const DEFAULT_ACTIVE_STATE: usize = 10;
+        Self::with_capacity(
+            behavior,
+            adapter,
+            receiver,
+            NonZeroUsize::new(DEFAULT_ACTIVE_STATE).unwrap(),
+        )
     }
 
     /// Establish a new entity manager with capacity for a number of instances
@@ -119,7 +121,7 @@ where
         behavior: B,
         mut adapter: A,
         mut receiver: Receiver<Message<B::Command>>,
-        capacity: usize,
+        capacity: NonZeroUsize,
     ) -> Self
     where
         B::Command: Send,
@@ -129,16 +131,19 @@ where
         let join_handle = tokio::spawn(async move {
             // Source our initial events and populate our internal entities map.
 
-            let mut entities = HashMap::with_capacity(capacity);
+            let mut entities = LruCache::new(capacity);
 
             if let Ok(records) = adapter.produce_initial().await {
                 tokio::pin!(records);
                 while let Some(record) = records.next().await {
                     Self::update_entity(&mut entities, record);
                 }
+                for (entity_id, state) in entities.iter() {
+                    let context = Context { entity_id };
+                    behavior.on_recovery_completed(&context, state).await;
+                }
             } else {
                 // A problem sourcing initial events is regarded as fatal.
-
                 return;
             }
 
@@ -156,6 +161,12 @@ where
                             Self::update_entity(&mut entities, record);
                         }
                         state = entities.get(&message.entity_id);
+                        let context = Context {
+                            entity_id: &message.entity_id,
+                        };
+                        behavior
+                            .on_recovery_completed(&context, state.unwrap_or(&B::State::default()))
+                            .await;
                     } else {
                         continue;
                     }
@@ -165,7 +176,7 @@ where
                 // Effects may emit events that will update state on success.
 
                 let context = Context {
-                    entity_id: message.entity_id,
+                    entity_id: &message.entity_id,
                 };
                 let mut effect = B::for_command(
                     &context,
@@ -177,13 +188,13 @@ where
                         &behavior,
                         &mut adapter,
                         &mut entities,
-                        context.entity_id.clone(),
+                        context.entity_id,
                         Ok(()),
                         &mut |entities, record| Self::update_entity(entities, record),
                     )
                     .await;
                 if result.is_err() {
-                    entities.remove(&context.entity_id);
+                    entities.pop(context.entity_id);
                 }
             }
         });
@@ -236,9 +247,12 @@ mod tests {
     }
 
     struct TempSensorBehavior {
+        recovered_1: Arc<Notify>,
+        recovered_2: Arc<Notify>,
         updated: Arc<Notify>,
     }
 
+    #[async_trait]
     impl EventSourcedBehavior for TempSensorBehavior {
         type State = TempState;
 
@@ -290,6 +304,15 @@ mod tests {
                 TempEvent::Registered => state.registered = true,
                 TempEvent::TemperatureUpdated { temp } => state.temp = *temp,
             }
+        }
+
+        async fn on_recovery_completed(&self, context: &Context, state: &Self::State) {
+            if context.entity_id == "id-1" {
+                self.recovered_1.notify_one();
+            } else {
+                self.recovered_2.notify_one();
+            };
+            println!("Recovered {} with {}!", context.entity_id, state.temp);
         }
     }
 
@@ -343,9 +366,13 @@ mod tests {
     async fn new_manager_with_one_update_and_a_message_reply() {
         // Set up the behavior and entity manager.
 
+        let temp_sensor_recovered_id_1 = Arc::new(Notify::new());
+        let temp_sensor_recovered_id_2 = Arc::new(Notify::new());
         let temp_sensor_updated = Arc::new(Notify::new());
 
         let temp_sensor_behavior = TempSensorBehavior {
+            recovered_1: temp_sensor_recovered_id_1.clone(),
+            recovered_2: temp_sensor_recovered_id_2.clone(),
             updated: temp_sensor_updated.clone(),
         };
 
@@ -360,10 +387,11 @@ mod tests {
 
         let (temp_sensor, temp_sensor_receiver) = mpsc::channel(10);
 
-        EntityManager::new(
+        EntityManager::with_capacity(
             temp_sensor_behavior,
             temp_sensor_record_adapter,
             temp_sensor_receiver,
+            NonZeroUsize::new(1).unwrap(),
         );
 
         // Send a command to update the temperature and wait until it is done. We then wait
@@ -379,6 +407,7 @@ mod tests {
             .await
             .is_ok());
 
+        temp_sensor_recovered_id_1.notified().await;
         temp_sensor_updated.notified().await;
 
         let (reply_to, reply) = oneshot::channel();
@@ -402,6 +431,8 @@ mod tests {
             .await
             .is_ok());
 
+        temp_sensor_updated.notified().await;
+
         // Delete the entity
 
         assert!(temp_sensor
@@ -409,12 +440,30 @@ mod tests {
             .await
             .is_ok());
 
-        // Create another entity
+        // Create another entity. This should cause cache eviction as the cache is
+        // size for a capacity of 1 when we created the entity manager.
 
         assert!(temp_sensor
             .send(Message::new("id-2", TempCommand::Register,))
             .await
             .is_ok());
+
+        temp_sensor_recovered_id_2.notified().await;
+
+        // We test eviction by querying for id-1 again. This should
+        // fail as we have an empty produce method in our adapter.
+
+        let (reply_to, reply) = oneshot::channel();
+        assert!(temp_sensor
+            .send(Message::new(
+                "id-1",
+                TempCommand::GetTemperature { reply_to }
+            ))
+            .await
+            .is_ok());
+        assert!(reply.await.is_err());
+
+        temp_sensor_recovered_id_1.notified().await;
 
         // Drop our command sender so that the entity manager stops.
 
