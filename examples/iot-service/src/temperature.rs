@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, num::NonZeroUsize};
+use std::{collections::VecDeque, num::NonZeroUsize, sync::Arc};
 
 use akka_persistence_rs::{
     effect::{emit_event, reply, unhandled, EffectExt},
@@ -91,7 +91,7 @@ impl EventSourcedBehavior for Behavior {
 // keys in any way required.
 
 struct RecordMarshaler {
-    events_key_secret_path: String,
+    events_key_secret_path: Arc<str>,
     secret_store: FileSecretStore,
 }
 
@@ -118,14 +118,15 @@ impl CommitLogRecordMarshaler<Event> for RecordMarshaler {
 
     fn to_entity_id(record: &streambed::commit_log::ConsumerRecord) -> Option<EntityId> {
         let entity_id = (record.key & EVENT_ID_BIT_MASK) as u32;
-        Some(entity_id.to_string())
+        let mut buffer = itoa::Buffer::new();
+        Some(EntityId::from(buffer.format(entity_id)))
     }
 
     fn secret_store(&self) -> &Self::SecretStore {
         &self.secret_store
     }
 
-    fn secret_path(&self, _entity_id: &EntityId) -> String {
+    fn secret_path(&self, _entity_id: &EntityId) -> Arc<str> {
         self.events_key_secret_path.clone()
     }
 }
@@ -153,7 +154,7 @@ pub async fn task(
     let file_log_topic_adapter = CommitLogTopicAdapter::new(
         commit_log,
         RecordMarshaler {
-            events_key_secret_path,
+            events_key_secret_path: Arc::from(events_key_secret_path),
             secret_store,
         },
         "iot-service",

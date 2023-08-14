@@ -434,7 +434,7 @@ mod tests {
         assert_eq!(
             temp_sensor_events_captured.recv().await.unwrap(),
             Record {
-                entity_id: "id-1".to_string(),
+                entity_id: EntityId::from("id-1"),
                 event: TempEvent::Deregistered,
                 metadata: crate::RecordMetadata {
                     deletion_event: true

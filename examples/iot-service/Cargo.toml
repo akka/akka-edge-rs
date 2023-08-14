@@ -12,6 +12,7 @@ env_logger = { workspace = true }
 git-version = { workspace = true }
 hex = { workspace = true }
 humantime = { workspace = true }
+itoa = { workspace = true }
 log = { workspace = true }
 postcard = { workspace = true, default-features = false, features = [
     "use-std",
