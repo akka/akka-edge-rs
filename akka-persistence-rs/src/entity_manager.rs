@@ -1,6 +1,6 @@
 //! The [EntityManager] handles the lifecycle and routing of messages for
 //! an entity type. One EntityManager per entity type.
-//! The EntityManager will spawn the entities on demand, i.e. when first
+//! The EntityManager will generally instantiate the entities on demand, i.e. when first
 //! message is sent to a specific entity. It will passivate least used
 //! entites to have a bounded number of entities in memory.
 //! The entities will recover their state from a stream of events.
@@ -8,22 +8,21 @@
 use async_trait::async_trait;
 use lru::LruCache;
 use std::io;
-use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 use tokio::sync::mpsc::Receiver;
-use tokio::task::{JoinError, JoinHandle};
 use tokio_stream::{Stream, StreamExt};
 
 use crate::entity::Context;
 use crate::entity::EventSourcedBehavior;
 use crate::{EntityId, Message, Record};
 
-/// Enables the interaction between data storage and an entity manager.
+/// Adapts events, in form of records, to another type of record e.g. those
+/// that can be persisted using a storage technology.
 #[async_trait]
 pub trait RecordAdapter<E> {
     /// Produce an initial source of events, which is called upon an entity
-    /// manager starting up. Any error from this method is considered fatal
+    /// manager task starting up. Any error from this method is considered fatal
     /// and will terminate the entity manager.
     async fn produce_initial(
         &mut self,
@@ -51,158 +50,109 @@ pub trait RecordAdapter<E> {
 /// Commands are sent to a channel established for the entity manager.
 /// Effects may be produced as a result of performing a command, which may,
 /// in turn, perform side effects and yield events.
-///
-/// Yielded events can be consumed by using the entity manager as a source
-/// of a [Stream].
-pub struct EntityManager<B> {
-    join_handle: JoinHandle<()>,
-    phantom: PhantomData<B>,
-}
-
-impl<B> EntityManager<B>
-where
-    B: EventSourcedBehavior,
-{
-    /// This method can be used to wait for an entity manager to complete.
-    pub async fn join(self) -> Result<(), JoinError> {
-        self.join_handle.await
-    }
-
-    fn update_entity(entities: &mut LruCache<EntityId, B::State>, record: Record<B::Event>)
-    where
-        B::State: Default,
-    {
-        if !record.metadata.deletion_event {
-            // Apply an event to state, creating the entity entry if necessary.
-            let context = Context {
-                entity_id: &record.entity_id,
-            };
-            let state = entities.get_or_insert_mut(record.entity_id.clone(), B::State::default);
-            B::on_event(&context, state, &record.event);
-        } else {
-            entities.pop(&record.entity_id);
-        }
-    }
-}
-
-impl<B> EntityManager<B>
-where
+pub async fn run<A, B>(
+    behavior: B,
+    mut adapter: A,
+    mut receiver: Receiver<Message<B::Command>>,
+    capacity: NonZeroUsize,
+) where
     B: EventSourcedBehavior + Send + Sync + 'static,
+    B::Command: Send,
+    B::State: Send + Sync,
+    A: RecordAdapter<B::Event> + Send + 'static,
 {
-    /// Establish a new entity manager with [DEFAULT_ACTIVE_STATE] instances
-    /// active at a time.
-    ///
-    /// A task will also be spawned to source events and process
-    /// commands using the stream and receiver channel passed in.
-    pub fn new<A>(behavior: B, adapter: A, receiver: Receiver<Message<B::Command>>) -> Self
-    where
-        B::Command: Send,
-        B::State: Send + Sync,
-        A: RecordAdapter<B::Event> + Send + 'static,
-    {
-        const DEFAULT_ACTIVE_STATE: usize = 10;
-        Self::with_capacity(
-            behavior,
-            adapter,
-            receiver,
-            NonZeroUsize::new(DEFAULT_ACTIVE_STATE).unwrap(),
-        )
+    // Source our initial events and populate our internal entities map.
+
+    let mut entities = LruCache::new(capacity);
+
+    if let Ok(records) = adapter.produce_initial().await {
+        tokio::pin!(records);
+        while let Some(record) = records.next().await {
+            update_entity::<B>(&mut entities, record);
+        }
+        for (entity_id, state) in entities.iter() {
+            let context = Context { entity_id };
+            behavior.on_recovery_completed(&context, state).await;
+        }
+    } else {
+        // A problem sourcing initial events is regarded as fatal.
+        return;
     }
 
-    /// Establish a new entity manager with capacity for a number of instances
-    /// active at a time. This capacity is not a limit and memory can grow to
-    /// accommodate more instances. However, dimensioning capacity in accordance
-    /// with an application's working set needs is important. In particular,
-    /// edge-based applications tend to retain all entities in memory.
-    ///
-    /// A task will also be spawned to source events and process
-    /// commands using the stream and receiver channel passed in.
-    pub fn with_capacity<A>(
-        behavior: B,
-        mut adapter: A,
-        mut receiver: Receiver<Message<B::Command>>,
-        capacity: NonZeroUsize,
-    ) -> Self
-    where
-        B::Command: Send,
-        B::State: Send + Sync,
-        A: RecordAdapter<B::Event> + Send + 'static,
-    {
-        let join_handle = tokio::spawn(async move {
-            // Source our initial events and populate our internal entities map.
+    // Receive commands for the entities and process them.
 
-            let mut entities = LruCache::new(capacity);
+    while let Some(message) = receiver.recv().await {
+        // Source entity if we don't have it.
 
-            if let Ok(records) = adapter.produce_initial().await {
+        let mut state = entities.get(&message.entity_id);
+
+        if state.is_none() {
+            if let Ok(records) = adapter.produce(&message.entity_id).await {
                 tokio::pin!(records);
                 while let Some(record) = records.next().await {
-                    Self::update_entity(&mut entities, record);
+                    update_entity::<B>(&mut entities, record);
                 }
-                for (entity_id, state) in entities.iter() {
-                    let context = Context { entity_id };
-                    behavior.on_recovery_completed(&context, state).await;
-                }
-            } else {
-                // A problem sourcing initial events is regarded as fatal.
-                return;
-            }
-
-            // Receive commands for the entities and process them.
-
-            while let Some(message) = receiver.recv().await {
-                // Source entity if we don't have it.
-
-                let mut state = entities.get(&message.entity_id);
-
-                if state.is_none() {
-                    if let Ok(records) = adapter.produce(&message.entity_id).await {
-                        tokio::pin!(records);
-                        while let Some(record) = records.next().await {
-                            Self::update_entity(&mut entities, record);
-                        }
-                        state = entities.get(&message.entity_id);
-                        let context = Context {
-                            entity_id: &message.entity_id,
-                        };
-                        behavior
-                            .on_recovery_completed(&context, state.unwrap_or(&B::State::default()))
-                            .await;
-                    } else {
-                        continue;
-                    }
-                }
-
-                // Given an entity, send it the command, possibly producing an effect.
-                // Effects may emit events that will update state on success.
-
+                state = entities.get(&message.entity_id);
                 let context = Context {
                     entity_id: &message.entity_id,
                 };
-                let mut effect = B::for_command(
-                    &context,
-                    state.unwrap_or(&B::State::default()),
-                    message.command,
-                );
-                let result = effect
-                    .process(
-                        &behavior,
-                        &mut adapter,
-                        &mut entities,
-                        context.entity_id,
-                        Ok(()),
-                        &mut |entities, record| Self::update_entity(entities, record),
-                    )
+                behavior
+                    .on_recovery_completed(&context, state.unwrap_or(&B::State::default()))
                     .await;
-                if result.is_err() {
-                    entities.pop(context.entity_id);
-                }
+            } else {
+                continue;
             }
-        });
-
-        Self {
-            join_handle,
-            phantom: PhantomData,
         }
+
+        // Given an entity, send it the command, possibly producing an effect.
+        // Effects may emit events that will update state on success.
+
+        let context = Context {
+            entity_id: &message.entity_id,
+        };
+        let mut effect = B::for_command(
+            &context,
+            state.unwrap_or(&B::State::default()),
+            message.command,
+        );
+        let result = effect
+            .process(
+                &behavior,
+                &mut adapter,
+                &mut entities,
+                context.entity_id,
+                Ok(()),
+                &mut |entities, record| update_entity::<B>(entities, record),
+            )
+            .await;
+        if result.is_err() {
+            entities.pop(context.entity_id);
+        }
+    }
+}
+
+fn update_entity<B>(entities: &mut LruCache<EntityId, B::State>, record: Record<B::Event>)
+where
+    B: EventSourcedBehavior + Send + Sync + 'static,
+    B::State: Default,
+{
+    if !record.metadata.deletion_event {
+        // Apply an event to state, creating the entity entry if necessary.
+        let context = Context {
+            entity_id: &record.entity_id,
+        };
+        let state = if let Some(state) = entities.get_mut(&record.entity_id) {
+            state
+        } else {
+            // We're avoiding the use of get_or_insert so that we can avoid
+            // cloning the entity id unless necessary.
+            entities.push(record.entity_id.clone(), B::State::default());
+            entities.get_mut(&record.entity_id).unwrap()
+        };
+        // let state = entities.get_or_insert_mut(record.entity_id, B::State::default);
+        B::on_event(&context, state, &record.event);
+    } else {
+        entities.pop(&record.entity_id);
     }
 }
 
@@ -387,12 +337,12 @@ mod tests {
 
         let (temp_sensor, temp_sensor_receiver) = mpsc::channel(10);
 
-        EntityManager::with_capacity(
+        let entity_manager_task = tokio::spawn(run(
             temp_sensor_behavior,
             temp_sensor_record_adapter,
             temp_sensor_receiver,
             NonZeroUsize::new(1).unwrap(),
-        );
+        ));
 
         // Send a command to update the temperature and wait until it is done. We then wait
         // on a noification from within our entity that the update has occurred. Waiting on
@@ -469,6 +419,8 @@ mod tests {
 
         drop(temp_sensor);
 
+        assert!(entity_manager_task.await.is_ok());
+
         // We now consume our entity manager as a source of events.
 
         assert_eq!(
@@ -482,7 +434,7 @@ mod tests {
         assert_eq!(
             temp_sensor_events_captured.recv().await.unwrap(),
             Record {
-                entity_id: "id-1".to_string(),
+                entity_id: EntityId::from("id-1"),
                 event: TempEvent::Deregistered,
                 metadata: crate::RecordMetadata {
                     deletion_event: true

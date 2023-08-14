@@ -4,7 +4,7 @@ use akka_persistence_rs::{entity_manager::RecordAdapter, EntityId, Record};
 use async_stream::stream;
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
-use std::{io, marker::PhantomData, pin::Pin};
+use std::{io, marker::PhantomData, pin::Pin, sync::Arc};
 use streambed::{
     commit_log::{CommitLog, ConsumerRecord, Key, ProducerRecord, Subscription, Topic, TopicRef},
     secret_store::SecretStore,
@@ -34,7 +34,7 @@ where
 
     /// Return a path to use for looking up secrets with respect to
     /// an entity being encrypted/decrypted.
-    fn secret_path(&self, entity_id: &EntityId) -> String;
+    fn secret_path(&self, entity_id: &EntityId) -> Arc<str>;
 
     #[cfg(feature = "cbor")]
     async fn record(&self, mut record: ConsumerRecord) -> Option<Record<E>> {
@@ -227,12 +227,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs, time::Duration};
+    use std::{env, fs, num::NonZeroUsize, time::Duration};
 
     use super::*;
-    use akka_persistence_rs::{
-        entity::EventSourcedBehavior, entity_manager::EntityManager, RecordMetadata,
-    };
+    use akka_persistence_rs::{entity::EventSourcedBehavior, entity_manager, RecordMetadata};
     use serde::Deserialize;
     use streambed::{
         commit_log::Header,
@@ -350,7 +348,7 @@ mod tests {
             panic!("should not be called")
         }
 
-        fn secret_path(&self, _entity_id: &EntityId) -> String {
+        fn secret_path(&self, _entity_id: &EntityId) -> Arc<str> {
             panic!("should not be called")
         }
 
@@ -359,7 +357,7 @@ mod tests {
                 .headers
                 .into_iter()
                 .find(|header| header.key == "entity-id")?;
-            let entity_id = String::from_utf8(value).ok()?;
+            let entity_id = EntityId::from(std::str::from_utf8(&value).ok()?);
             let value = String::from_utf8(record.value).ok()?;
             let event = MyEvent { value };
             Some(Record {
@@ -378,7 +376,7 @@ mod tests {
         ) -> Option<(ProducerRecord, Record<MyEvent>)> {
             let headers = vec![Header {
                 key: "entity-id".to_string(),
-                value: record.entity_id.clone().into_bytes(),
+                value: record.entity_id.as_bytes().into(),
             }];
             Some((
                 ProducerRecord {
@@ -415,7 +413,7 @@ mod tests {
 
         // Scaffolding
 
-        let entity_id = "some-entity".to_string();
+        let entity_id = EntityId::from("some-entity");
 
         // Produce a stream given no prior persistence. Should return an empty stream.
 
@@ -503,6 +501,12 @@ mod tests {
 
         let (_, my_command_receiver) = mpsc::channel(10);
 
-        EntityManager::new(my_behavior, file_log_topic_adapter, my_command_receiver);
+        entity_manager::run(
+            my_behavior,
+            file_log_topic_adapter,
+            my_command_receiver,
+            NonZeroUsize::new(1).unwrap(),
+        )
+        .await;
     }
 }

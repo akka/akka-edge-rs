@@ -12,16 +12,19 @@ async-trait = "0.1.72"
 chrono = "0.4.23"
 ciborium = "0.2"
 clap = "4.0.29"
+criterion = "0.4.0"
 env_logger = "0.10.0"
 git-version = "0.3.5"
 hex = "0.4.3"
 humantime = "2.1.0"
+itoa = "1.0"
 log = "0.4.17"
 lru = "0.11.0"
 postcard = { version = "1.0.6", default-features = false }
 rand = "0.8"
 scopeguard = "1.1"
 serde = "1.0.151"
+smol_str = "0.2.0"
 streambed = { git = "https://github.com/streambed/streambed-rs.git", rev = "4b7e1561666bc1860339d27f5abf9be246ef5ad9" }
 streambed-confidant = { git = "https://github.com/streambed/streambed-rs.git", rev = "4b7e1561666bc1860339d27f5abf9be246ef5ad9" }
 streambed-logged = { git = "https://github.com/streambed/streambed-rs.git", rev = "4b7e1561666bc1860339d27f5abf9be246ef5ad9" }
@@ -30,3 +33,7 @@ tokio = "1.23.0"
 tokio-stream = "0.1.14"
 tokio-util = "0.7.4"
 warp = "0.3"
+
+[profile.bench-debug]
+inherits = "release"
+debug = true

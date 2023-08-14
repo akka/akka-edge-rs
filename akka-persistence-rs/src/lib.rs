@@ -5,7 +5,7 @@ pub mod entity;
 pub mod entity_manager;
 
 /// Uniquely identifies an entity, or entity instance.
-pub type EntityId = String;
+pub type EntityId = smol_str::SmolStr;
 
 /// A message encapsulates a command that is addressed to a specific entity.
 #[derive(Debug, PartialEq)]

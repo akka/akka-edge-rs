@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 async-trait = { workspace = true }
 lru = { workspace = true }
+smol_str = { workspace = true }
 tokio = { workspace = true, features = [
     "sync",
     "macros",
@@ -16,5 +17,10 @@ tokio = { workspace = true, features = [
 tokio-stream = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 env_logger = { workspace = true }
 test-log = { workspace = true }
+
+[[bench]]
+name = "benches"
+harness = false
