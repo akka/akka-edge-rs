@@ -6,7 +6,11 @@ use lru::LruCache;
 use std::{future::Future, io, marker::PhantomData};
 use tokio::sync::oneshot;
 
-use crate::{entity::EventSourcedBehavior, entity_manager::RecordAdapter, EntityId, Record};
+use crate::{
+    entity::EventSourcedBehavior,
+    entity_manager::{EventEnvelope, Handler},
+    EntityId,
+};
 
 /// Errors that can occur when applying effects.
 pub enum Error {
@@ -27,11 +31,11 @@ where
     async fn process(
         &mut self,
         behavior: &B,
-        adapter: &mut (dyn RecordAdapter<B::Event> + Send),
+        handler: &mut (dyn Handler<B::Event> + Send),
         entities: &mut LruCache<EntityId, B::State>,
         entity_id: &EntityId,
         prev_result: Result,
-        update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
+        update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, EventEnvelope<B::Event>)
                   + Send),
     ) -> Result;
 }
@@ -54,18 +58,18 @@ where
     async fn process(
         &mut self,
         behavior: &B,
-        adapter: &mut (dyn RecordAdapter<B::Event> + Send),
+        handler: &mut (dyn Handler<B::Event> + Send),
         entities: &mut LruCache<EntityId, B::State>,
         entity_id: &EntityId,
         prev_result: Result,
-        update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
+        update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, EventEnvelope<B::Event>)
                   + Send),
     ) -> Result {
         let r = self
             ._l
             .process(
                 behavior,
-                adapter,
+                handler,
                 entities,
                 entity_id,
                 prev_result,
@@ -74,7 +78,7 @@ where
             .await;
         if r.is_ok() {
             self._r
-                .process(behavior, adapter, entities, entity_id, r, update_entity)
+                .process(behavior, handler, entities, entity_id, r, update_entity)
                 .await
         } else {
             r
@@ -138,25 +142,23 @@ where
     async fn process(
         &mut self,
         _behavior: &B,
-        adapter: &mut (dyn RecordAdapter<B::Event> + Send),
+        handler: &mut (dyn Handler<B::Event> + Send),
         entities: &mut LruCache<EntityId, B::State>,
         entity_id: &EntityId,
         prev_result: Result,
-        update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
+        update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, EventEnvelope<B::Event>)
                   + Send),
     ) -> Result {
         if prev_result.is_ok() {
             if let Some(event) = self.event.take() {
-                let record = Record {
+                let envelope = EventEnvelope {
                     entity_id: entity_id.clone(),
                     event,
-                    metadata: crate::RecordMetadata {
-                        deletion_event: self.deletion_event,
-                    },
+                    deletion_event: self.deletion_event,
                 };
-                let result = adapter.process(record).await.map_err(Error::IoError);
-                if let Ok(record) = result {
-                    update_entity(entities, record);
+                let result = handler.process(envelope).await.map_err(Error::IoError);
+                if let Ok(envelope) = result {
+                    update_entity(entities, envelope);
                     Ok(())
                 } else {
                     result.map(|_| ())
@@ -221,11 +223,11 @@ where
     async fn process(
         &mut self,
         _behavior: &B,
-        _adapter: &mut (dyn RecordAdapter<B::Event> + Send),
+        _handler: &mut (dyn Handler<B::Event> + Send),
         _entities: &mut LruCache<EntityId, B::State>,
         _entity_id: &EntityId,
         prev_result: Result,
-        _update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
+        _update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, EventEnvelope<B::Event>)
                   + Send),
     ) -> Result {
         if prev_result.is_ok() {
@@ -245,7 +247,7 @@ where
 {
 }
 
-/// An effect to reply a record if the previous effect completed
+/// An effect to reply an envelope if the previous effect completed
 /// successfully. Note that if state from having emitted an event
 /// via a prior effect is required, then use a [then] effect instead.
 pub fn reply<B, T>(reply_to: oneshot::Sender<T>, reply: T) -> Reply<B, T> {
@@ -273,11 +275,11 @@ where
     async fn process(
         &mut self,
         behavior: &B,
-        _adapter: &mut (dyn RecordAdapter<B::Event> + Send),
+        _handler: &mut (dyn Handler<B::Event> + Send),
         entities: &mut LruCache<EntityId, B::State>,
         entity_id: &EntityId,
         prev_result: Result,
-        _update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
+        _update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, EventEnvelope<B::Event>)
                   + Send),
     ) -> Result {
         let f = self.f.take();
@@ -331,11 +333,11 @@ where
     async fn process(
         &mut self,
         _behavior: &B,
-        _adapter: &mut (dyn RecordAdapter<B::Event> + Send),
+        _handler: &mut (dyn Handler<B::Event> + Send),
         _entities: &mut LruCache<EntityId, B::State>,
         _entity_id: &EntityId,
         _prev_result: Result,
-        _update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, Record<B::Event>)
+        _update_entity: &mut (dyn for<'a> FnMut(&'a mut LruCache<EntityId, B::State>, EventEnvelope<B::Event>)
                   + Send),
     ) -> Result {
         Ok(())

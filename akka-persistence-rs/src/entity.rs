@@ -44,7 +44,7 @@ pub trait EventSourcedBehavior {
     /// Given a state and event, modify state, which could indicate transition to
     /// the next state. No side effects are to be performed. Can be used to replay
     /// events to attain a new state i.e. the major function of event sourcing.
-    fn on_event(context: &Context, state: &mut Self::State, event: &Self::Event);
+    fn on_event(context: &Context, state: &mut Self::State, event: Self::Event);
 
     /// The entity will always receive a "recovery completed" signal, even if there
     /// are no events sourced, or if it’s a new entity with a previously unused EntityId.

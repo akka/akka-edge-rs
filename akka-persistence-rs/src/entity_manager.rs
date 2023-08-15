@@ -15,31 +15,59 @@ use tokio_stream::{Stream, StreamExt};
 
 use crate::entity::Context;
 use crate::entity::EventSourcedBehavior;
-use crate::{EntityId, Message, Record};
+use crate::{EntityId, Message};
 
-/// Adapts events, in form of records, to another type of record e.g. those
-/// that can be persisted using a storage technology.
+/// An envelope wraps an event associated with a specific entity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventEnvelope<E> {
+    /// Flags whether the associated event is to be considered
+    /// as one that represents an entity instance being deleted.
+    pub deletion_event: bool,
+    pub entity_id: EntityId,
+    pub event: E,
+}
+
+impl<E> EventEnvelope<E> {
+    pub fn new<EI>(entity_id: EI, event: E) -> Self
+    where
+        EI: Into<EntityId>,
+    {
+        Self {
+            deletion_event: false,
+            entity_id: entity_id.into(),
+            event,
+        }
+    }
+}
+
+/// Sources events, in form of event envelopes, to another type of envelope e.g. those
+/// that can be sourced using a storage technology.
 #[async_trait]
-pub trait RecordAdapter<E> {
+pub trait SourceProvider<E> {
     /// Produce an initial source of events, which is called upon an entity
     /// manager task starting up. Any error from this method is considered fatal
     /// and will terminate the entity manager.
-    async fn produce_initial(
+    async fn source_initial(
         &mut self,
-    ) -> io::Result<Pin<Box<dyn Stream<Item = Record<E>> + Send + 'async_trait>>>;
+    ) -> io::Result<Pin<Box<dyn Stream<Item = EventEnvelope<E>> + Send + 'async_trait>>>;
 
     /// Produce a source of events. An entity id
     /// is passed to the source method so that the source is
     /// discriminate regarding the entity events to supply.
-    async fn produce(
+    async fn source(
         &mut self,
         entity_id: &EntityId,
-    ) -> io::Result<Pin<Box<dyn Stream<Item = Record<E>> + Send + 'async_trait>>>;
+    ) -> io::Result<Pin<Box<dyn Stream<Item = EventEnvelope<E>> + Send + 'async_trait>>>;
+}
 
-    /// Consume a record, performing some processing
-    /// e.g. persisting a record, and then returning the same record
+/// Handles events, in form of event envelopes, to another type of envelope e.g. those
+/// that can be persisted using a storage technology.
+#[async_trait]
+pub trait Handler<E> {
+    /// Consume an envelope, performing some processing
+    /// e.g. persisting an envelope, and then returning the same envelope
     /// if all went well.
-    async fn process(&mut self, record: Record<E>) -> io::Result<Record<E>>;
+    async fn process(&mut self, envelope: EventEnvelope<E>) -> io::Result<EventEnvelope<E>>;
 }
 
 /// Manages the lifecycle of entities given a specific behavior.
@@ -59,16 +87,16 @@ pub async fn run<A, B>(
     B: EventSourcedBehavior + Send + Sync + 'static,
     B::Command: Send,
     B::State: Send + Sync,
-    A: RecordAdapter<B::Event> + Send + 'static,
+    A: SourceProvider<B::Event> + Handler<B::Event> + Send + 'static,
 {
     // Source our initial events and populate our internal entities map.
 
     let mut entities = LruCache::new(capacity);
 
-    if let Ok(records) = adapter.produce_initial().await {
-        tokio::pin!(records);
-        while let Some(record) = records.next().await {
-            update_entity::<B>(&mut entities, record);
+    if let Ok(envelopes) = adapter.source_initial().await {
+        tokio::pin!(envelopes);
+        while let Some(envelope) = envelopes.next().await {
+            update_entity::<B>(&mut entities, envelope);
         }
         for (entity_id, state) in entities.iter() {
             let context = Context { entity_id };
@@ -87,10 +115,10 @@ pub async fn run<A, B>(
         let mut state = entities.get(&message.entity_id);
 
         if state.is_none() {
-            if let Ok(records) = adapter.produce(&message.entity_id).await {
-                tokio::pin!(records);
-                while let Some(record) = records.next().await {
-                    update_entity::<B>(&mut entities, record);
+            if let Ok(envelopes) = adapter.source(&message.entity_id).await {
+                tokio::pin!(envelopes);
+                while let Some(envelope) = envelopes.next().await {
+                    update_entity::<B>(&mut entities, envelope);
                 }
                 state = entities.get(&message.entity_id);
                 let context = Context {
@@ -122,7 +150,7 @@ pub async fn run<A, B>(
                 &mut entities,
                 context.entity_id,
                 Ok(()),
-                &mut |entities, record| update_entity::<B>(entities, record),
+                &mut |entities, envelope| update_entity::<B>(entities, envelope),
             )
             .await;
         if result.is_err() {
@@ -131,28 +159,27 @@ pub async fn run<A, B>(
     }
 }
 
-fn update_entity<B>(entities: &mut LruCache<EntityId, B::State>, record: Record<B::Event>)
+fn update_entity<B>(entities: &mut LruCache<EntityId, B::State>, envelope: EventEnvelope<B::Event>)
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
     B::State: Default,
 {
-    if !record.metadata.deletion_event {
+    if !envelope.deletion_event {
         // Apply an event to state, creating the entity entry if necessary.
         let context = Context {
-            entity_id: &record.entity_id,
+            entity_id: &envelope.entity_id,
         };
-        let state = if let Some(state) = entities.get_mut(&record.entity_id) {
+        let state = if let Some(state) = entities.get_mut(&envelope.entity_id) {
             state
         } else {
             // We're avoiding the use of get_or_insert so that we can avoid
             // cloning the entity id unless necessary.
-            entities.push(record.entity_id.clone(), B::State::default());
-            entities.get_mut(&record.entity_id).unwrap()
+            entities.push(envelope.entity_id.clone(), B::State::default());
+            entities.get_mut(&envelope.entity_id).unwrap()
         };
-        // let state = entities.get_or_insert_mut(record.entity_id, B::State::default);
-        B::on_event(&context, state, &record.event);
+        B::on_event(&context, state, envelope.event);
     } else {
-        entities.pop(&record.entity_id);
+        entities.pop(&envelope.entity_id);
     }
 }
 
@@ -248,11 +275,11 @@ mod tests {
             }
         }
 
-        fn on_event(_context: &Context, state: &mut Self::State, event: &Self::Event) {
+        fn on_event(_context: &Context, state: &mut Self::State, event: Self::Event) {
             match event {
                 TempEvent::Deregistered => state.registered = false,
                 TempEvent::Registered => state.registered = true,
-                TempEvent::TemperatureUpdated { temp } => state.temp = *temp,
+                TempEvent::TemperatureUpdated { temp } => state.temp = temp,
             }
         }
 
@@ -267,43 +294,49 @@ mod tests {
     }
 
     // The following adapter is not normally created by a developer, but we
-    // declare one here so that we can provide a source of records and capture
+    // declare one here so that we can provide a source of events and capture
     // ones emitted by the entity manager.
-    struct VecRecordAdapter {
-        initial_records: Option<Vec<Record<TempEvent>>>,
-        captured_records: mpsc::Sender<Record<TempEvent>>,
+    struct VecEventEnvelopeAdapter {
+        initial_events: Option<Vec<EventEnvelope<TempEvent>>>,
+        captured_events: mpsc::Sender<EventEnvelope<TempEvent>>,
     }
 
     #[async_trait]
-    impl RecordAdapter<TempEvent> for VecRecordAdapter {
-        async fn produce_initial(
+    impl SourceProvider<TempEvent> for VecEventEnvelopeAdapter {
+        async fn source_initial(
             &mut self,
-        ) -> io::Result<Pin<Box<dyn Stream<Item = Record<TempEvent>> + Send + 'async_trait>>>
+        ) -> io::Result<Pin<Box<dyn Stream<Item = EventEnvelope<TempEvent>> + Send + 'async_trait>>>
         {
-            if let Some(records) = self.initial_records.take() {
-                Ok(Box::pin(tokio_stream::iter(records)))
+            if let Some(events) = self.initial_events.take() {
+                Ok(Box::pin(tokio_stream::iter(events)))
             } else {
                 Ok(Box::pin(tokio_stream::empty()))
             }
         }
 
-        async fn produce(
+        async fn source(
             &mut self,
             _entity_id: &EntityId,
-        ) -> io::Result<Pin<Box<dyn Stream<Item = Record<TempEvent>> + Send + 'async_trait>>>
+        ) -> io::Result<Pin<Box<dyn Stream<Item = EventEnvelope<TempEvent>> + Send + 'async_trait>>>
         {
             Ok(Box::pin(tokio_stream::empty()))
         }
+    }
 
-        async fn process(&mut self, record: Record<TempEvent>) -> io::Result<Record<TempEvent>> {
-            self.captured_records
-                .send(record.clone())
+    #[async_trait]
+    impl Handler<TempEvent> for VecEventEnvelopeAdapter {
+        async fn process(
+            &mut self,
+            envelope: EventEnvelope<TempEvent>,
+        ) -> io::Result<EventEnvelope<TempEvent>> {
+            self.captured_events
+                .send(envelope.clone())
                 .await
-                .map(|_| record)
+                .map(|_| envelope)
                 .map_err(|_| {
                     io::Error::new(
                         io::ErrorKind::Other,
-                        "A problem occurred processing a record",
+                        "A problem occurred processing an envelope",
                     )
                 })
         }
@@ -327,19 +360,19 @@ mod tests {
         };
 
         let (temp_sensor_events, mut temp_sensor_events_captured) = mpsc::channel(4);
-        let temp_sensor_record_adapter = VecRecordAdapter {
-            initial_records: Some(vec![
-                Record::new("id-1", TempEvent::Registered),
-                Record::new("id-1", TempEvent::TemperatureUpdated { temp: 10 }),
+        let temp_sensor_event_adapter = VecEventEnvelopeAdapter {
+            initial_events: Some(vec![
+                EventEnvelope::new("id-1", TempEvent::Registered),
+                EventEnvelope::new("id-1", TempEvent::TemperatureUpdated { temp: 10 }),
             ]),
-            captured_records: temp_sensor_events,
+            captured_events: temp_sensor_events,
         };
 
         let (temp_sensor, temp_sensor_receiver) = mpsc::channel(10);
 
         let entity_manager_task = tokio::spawn(run(
             temp_sensor_behavior,
-            temp_sensor_record_adapter,
+            temp_sensor_event_adapter,
             temp_sensor_receiver,
             NonZeroUsize::new(1).unwrap(),
         ));
@@ -425,25 +458,23 @@ mod tests {
 
         assert_eq!(
             temp_sensor_events_captured.recv().await.unwrap(),
-            Record::new("id-1", TempEvent::TemperatureUpdated { temp: 32 })
+            EventEnvelope::new("id-1", TempEvent::TemperatureUpdated { temp: 32 })
         );
         assert_eq!(
             temp_sensor_events_captured.recv().await.unwrap(),
-            Record::new("id-1", TempEvent::TemperatureUpdated { temp: 64 })
+            EventEnvelope::new("id-1", TempEvent::TemperatureUpdated { temp: 64 })
         );
         assert_eq!(
             temp_sensor_events_captured.recv().await.unwrap(),
-            Record {
+            EventEnvelope {
                 entity_id: EntityId::from("id-1"),
                 event: TempEvent::Deregistered,
-                metadata: crate::RecordMetadata {
-                    deletion_event: true
-                }
+                deletion_event: true
             }
         );
         assert_eq!(
             temp_sensor_events_captured.recv().await.unwrap(),
-            Record::new("id-2", TempEvent::Registered)
+            EventEnvelope::new("id-2", TempEvent::Registered)
         );
         assert!(temp_sensor_events_captured.recv().await.is_none());
     }

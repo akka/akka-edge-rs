@@ -1,0 +1,10 @@
+[package]
+name = "akka-projection-rs-grpc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio-stream = { workspace = true }
+
+akka-persistence-rs = { path = "../akka-persistence-rs" }
+akka-projection-rs = { path = "../akka-projection-rs" }

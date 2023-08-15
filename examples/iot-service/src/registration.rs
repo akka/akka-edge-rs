@@ -1,9 +1,10 @@
-//! Handle temperature sensor entity concerns
+//! Handle a local registration entity for testing without a remote gRPC endpoint.
+//! Illustrates the use of a [akka_projection_rs::eventsource::LocalSourceProvider]
 //!
-use std::{collections::VecDeque, num::NonZeroUsize, sync::Arc};
+use std::{num::NonZeroUsize, sync::Arc};
 
 use akka_persistence_rs::{
-    effect::{emit_event, reply, unhandled, EffectExt},
+    effect::{emit_event, EffectExt},
     entity::EventSourcedBehavior,
     entity_manager::{self, EventEnvelope},
     EntityId, Message,
@@ -14,29 +15,25 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use streambed::commit_log::Key;
 use streambed_confidant::FileSecretStore;
-use streambed_logged::{compaction::NthKeyBasedRetention, FileLog};
-use tokio::sync::{mpsc, oneshot};
+use streambed_logged::{compaction::KeyBasedRetention, FileLog};
+use tokio::sync::mpsc;
 
-// Declare the entity
-
-#[derive(Default)]
-pub struct State {
-    history: VecDeque<u32>,
-    secret: SecretDataValue,
-}
+// Declare the entity for the purposes of retaining registration keys for devices.
 
 pub type SecretDataValue = SmolStr;
 
+#[derive(Default)]
+pub struct State {
+    secret: SecretDataValue,
+}
+
 pub enum Command {
-    Get { reply_to: oneshot::Sender<Vec<u32>> },
-    Post { temperature: u32 },
     Register { secret: SecretDataValue },
 }
 
 #[derive(Clone, Deserialize, Serialize)]
 pub enum Event {
     Registered { secret: SecretDataValue },
-    TemperatureRead { temperature: u32 },
 }
 
 struct Behavior;
@@ -50,22 +47,11 @@ impl EventSourcedBehavior for Behavior {
 
     fn for_command(
         _context: &akka_persistence_rs::entity::Context,
-        state: &Self::State,
+        _state: &Self::State,
         command: Self::Command,
     ) -> Box<dyn akka_persistence_rs::effect::Effect<Self>> {
-        match command {
-            Command::Get { reply_to } if !state.history.is_empty() => {
-                reply(reply_to, state.history.clone().into()).boxed()
-            }
-
-            Command::Post { temperature } if !state.secret.is_empty() => {
-                emit_event(Event::TemperatureRead { temperature }).boxed()
-            }
-
-            Command::Register { secret } => emit_event(Event::Registered { secret }).boxed(),
-
-            _ => unhandled(),
-        }
+        let Command::Register { secret } = command;
+        emit_event(Event::Registered { secret }).boxed()
     }
 
     fn on_event(
@@ -73,17 +59,9 @@ impl EventSourcedBehavior for Behavior {
         state: &mut Self::State,
         event: Self::Event,
     ) {
-        match event {
-            Event::Registered { secret } => {
-                state.secret = secret;
-            }
-            Event::TemperatureRead { temperature } => {
-                if state.history.len() == MAX_HISTORY_EVENTS {
-                    state.history.pop_front();
-                }
-                state.history.push_back(temperature);
-            }
-        }
+        let Event::Registered { secret } = event;
+
+        state.secret = secret.clone();
     }
 }
 
@@ -96,9 +74,9 @@ impl EventSourcedBehavior for Behavior {
 // Marshalers can be completely overidden to serialize events and encode
 // keys in any way required.
 
-struct EventEnvelopeMarshaler {
-    events_key_secret_path: Arc<str>,
-    secret_store: FileSecretStore,
+pub struct EventEnvelopeMarshaler {
+    pub events_key_secret_path: Arc<str>,
+    pub secret_store: FileSecretStore,
 }
 
 // Our event keys will occupy the top 12 bits of the key, meaning
@@ -117,14 +95,9 @@ impl CommitLogEventEnvelopeMarshaler<Event> for EventEnvelopeMarshaler {
     type SecretStore = FileSecretStore;
 
     fn to_compaction_key(envelope: &EventEnvelope<Event>) -> Option<Key> {
-        let record_type = match &envelope.event {
-            Event::TemperatureRead { .. } => Some(0),
-            Event::Registered { .. } => Some(1),
-        };
-        record_type.and_then(|record_type| {
-            let entity_id = envelope.entity_id.parse::<u32>().ok()?;
-            Some(record_type << EVENT_TYPE_BIT_SHIFT | entity_id as u64)
-        })
+        let entity_id = envelope.entity_id.parse::<u32>().ok()?;
+        let Event::Registered { .. } = envelope.event;
+        Some(0 << EVENT_TYPE_BIT_SHIFT | entity_id as u64)
     }
 
     fn to_entity_id(record: &streambed::commit_log::ConsumerRecord) -> Option<EntityId> {
@@ -142,32 +115,21 @@ impl CommitLogEventEnvelopeMarshaler<Event> for EventEnvelopeMarshaler {
     }
 }
 
-const EVENTS_TOPIC: &str = "temperature";
-const MAX_HISTORY_EVENTS: usize = 10;
-// Size the following to the typical number of devices we expect to have in the system.
-// Note though that it will impact memory, so there is a trade-off. Let's suppose this
-// was some LoRaWAN system and that our gateway cannot handle more than 1,000 devices
-// being connected. We can work out that 1,000 is therefore a reasonable limit. We can
-// have less or more. The overhead is small, but should be calculated and measured for
-// a production app.
-const MAX_TOPIC_COMPACTION_KEYS: usize = 1_000;
+pub const EVENTS_TOPIC: &str = "registrations";
+// Size the following to the typical number of entities we expect to have in the system.
+const MAX_TOPIC_COMPACTION_KEYS: usize = 1;
 
-/// Manage the temperature sensor.
+/// Manage the registration.
 pub async fn task(
     mut commit_log: FileLog,
     secret_store: FileSecretStore,
     events_key_secret_path: String,
     command_receiver: mpsc::Receiver<Message<Command>>,
 ) {
-    // We register a compaction strategy for our topic such that when we use up
-    // 64KB of disk space (the default), we will run compaction so that unwanted
-    // events are removed. In our scenario, unwanted events can be removed when
-    // the exceed MAX_HISTORY_EVENTS as we do not have a requirement to ever
-    // return more than that.
     commit_log
         .register_compaction(
             EVENTS_TOPIC.to_string(),
-            NthKeyBasedRetention::new(MAX_TOPIC_COMPACTION_KEYS, MAX_HISTORY_EVENTS),
+            KeyBasedRetention::new(MAX_TOPIC_COMPACTION_KEYS),
         )
         .await
         .unwrap();
