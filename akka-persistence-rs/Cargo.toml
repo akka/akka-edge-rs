@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 async-trait = { workspace = true }
+chrono = { workspace = true }
 lru = { workspace = true }
 smol_str = { workspace = true }
 tokio = { workspace = true, features = [

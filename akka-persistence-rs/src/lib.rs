@@ -4,8 +4,17 @@ pub mod effect;
 pub mod entity;
 pub mod entity_manager;
 
+/// Uniquely identifies the type of an Entity.
+pub type EntityType = smol_str::SmolStr;
+
 /// Uniquely identifies an entity, or entity instance.
 pub type EntityId = smol_str::SmolStr;
+
+/// A namespaced entity id given an entity type.
+pub struct PersistenceId {
+    pub entity_type: EntityType,
+    pub entity_id: EntityId,
+}
 
 /// A message encapsulates a command that is addressed to a specific entity.
 #[derive(Debug, PartialEq)]
@@ -22,37 +31,6 @@ impl<C> Message<C> {
         Self {
             entity_id: entity_id.into(),
             command,
-        }
-    }
-}
-
-/// Additional information associated with a record.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RecordMetadata {
-    /// Flags whether the associated event is to be considered
-    /// as one that represents an entity instance being deleted.
-    pub deletion_event: bool,
-}
-
-/// A record is an event associated with a specific entity.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Record<E> {
-    pub entity_id: EntityId,
-    pub event: E,
-    pub metadata: RecordMetadata,
-}
-
-impl<E> Record<E> {
-    pub fn new<EI>(entity_id: EI, event: E) -> Self
-    where
-        EI: Into<EntityId>,
-    {
-        Self {
-            entity_id: entity_id.into(),
-            event,
-            metadata: RecordMetadata {
-                deletion_event: false,
-            },
         }
     }
 }

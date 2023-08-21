@@ -3,6 +3,10 @@
 members = [
     "akka-persistence-rs",
     "akka-persistence-rs-commitlog",
+    "akka-projection-rs",
+    "akka-projection-rs-commitlog",
+    "akka-projection-rs-grpc",
+    "akka-projection-rs-storage",
     "examples/iot-service",
 ]
 

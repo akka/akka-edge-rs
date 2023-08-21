@@ -3,8 +3,8 @@ use std::{io, num::NonZeroUsize, pin::Pin, sync::Arc};
 use akka_persistence_rs::{
     effect::{emit_event, Effect, EffectExt},
     entity::{Context, EventSourcedBehavior},
-    entity_manager::{self, RecordAdapter},
-    EntityId, Message, Record,
+    entity_manager::{self, EventEnvelope, Handler, SourceProvider},
+    EntityId, Message,
 };
 use async_trait::async_trait;
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -35,7 +35,7 @@ impl EventSourcedBehavior for Behavior {
         emit_event(Event).boxed()
     }
 
-    fn on_event(_context: &Context, _state: &mut Self::State, _event: &Self::Event) {}
+    fn on_event(_context: &Context, _state: &mut Self::State, _event: Self::Event) {}
 }
 
 struct Adapter {
@@ -44,27 +44,33 @@ struct Adapter {
 }
 
 #[async_trait]
-impl RecordAdapter<Event> for Adapter {
-    async fn produce_initial(
+impl SourceProvider<Event> for Adapter {
+    async fn source_initial(
         &mut self,
-    ) -> io::Result<Pin<Box<dyn Stream<Item = Record<Event>> + Send + 'async_trait>>> {
+    ) -> io::Result<Pin<Box<dyn Stream<Item = EventEnvelope<Event>> + Send + 'async_trait>>> {
         Ok(Box::pin(tokio_stream::empty()))
     }
 
-    async fn produce(
+    async fn source(
         &mut self,
         _entity_id: &EntityId,
-    ) -> io::Result<Pin<Box<dyn Stream<Item = Record<Event>> + Send + 'async_trait>>> {
+    ) -> io::Result<Pin<Box<dyn Stream<Item = EventEnvelope<Event>> + Send + 'async_trait>>> {
         Ok(Box::pin(tokio_stream::empty()))
     }
+}
 
-    async fn process(&mut self, record: Record<Event>) -> io::Result<Record<Event>> {
+#[async_trait]
+impl Handler<Event> for Adapter {
+    async fn process(
+        &mut self,
+        envelope: EventEnvelope<Event>,
+    ) -> io::Result<EventEnvelope<Event>> {
         self.event_count += 1;
         if self.event_count == NUM_EVENTS {
             self.events_processed.notify_one();
             self.event_count = 0;
         }
-        Ok(record)
+        Ok(envelope)
     }
 }
 

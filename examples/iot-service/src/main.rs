@@ -10,6 +10,8 @@ use streambed_logged::{args::CommitLogArgs, FileLog};
 use tokio::{net::UdpSocket, sync::mpsc};
 
 mod http_server;
+mod registration;
+mod registration_projection;
 mod temperature;
 mod udp_server;
 
@@ -37,6 +39,8 @@ struct Args {
     udp_addr: SocketAddr,
 }
 
+const MAX_REGISTRATION_MANAGER_COMMANDS: usize = 10;
+const MAX_REGISTRATION_PROJECTION_MANAGER_COMMANDS: usize = 10;
 const MAX_TEMPERATURE_MANAGER_COMMANDS: usize = 10;
 
 #[tokio::main]
@@ -67,12 +71,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ss
     };
 
-    // To keep things straightforward for this example, we will use
-    // a random key to encrypt our events where we've not already
-    // written a key. In a real-world scenario, our temperature entities
-    // would be provisioned using some out-of-band mechanism. Upon
-    // provisioning, the secret store would be updated with a secret
-    // at a path that is specific for the entity.
+    // The path of our key we use to encrypt data at rest.
     let temperature_events_key_secret_path =
         format!("{}/secrets.temperature-events.key", args.ss_args.ss_ns);
 
@@ -93,18 +92,46 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (temperature_command, temperature_command_receiver) =
         mpsc::channel(MAX_TEMPERATURE_MANAGER_COMMANDS);
 
+    // Establish channels for the registrations
+    let (registration_command, registration_command_receiver) =
+        mpsc::channel(MAX_REGISTRATION_MANAGER_COMMANDS);
+
+    // Establish channels for the registration projection
+    let (_registration_projection_command, registration_projection_command_receiver) =
+        mpsc::channel(MAX_REGISTRATION_PROJECTION_MANAGER_COMMANDS);
+
     // Start up the http service
-    let routes = http_server::routes(temperature_command.clone());
+    let routes = http_server::routes(registration_command, temperature_command.clone());
     tokio::spawn(warp::serve(routes).run(args.http_addr));
     info!("HTTP listening on {}", args.http_addr);
 
     // Start up the UDP service
     let socket = UdpSocket::bind(args.udp_addr).await?;
-    tokio::spawn(udp_server::task(socket, temperature_command));
+    tokio::spawn(udp_server::task(socket, temperature_command.clone()));
     info!("UDP listening on {}", args.udp_addr);
 
+    // Start up a task to manage registrations
+    tokio::spawn(registration::task(
+        cl.clone(),
+        ss.clone(),
+        temperature_events_key_secret_path.clone(),
+        registration_command_receiver,
+    ))
+    .await?;
+
+    // Start up a task to manage registration projections
+    tokio::spawn(registration_projection::task(
+        cl.clone(),
+        ss.clone(),
+        temperature_events_key_secret_path.clone(),
+        registration_projection_command_receiver,
+        temperature_command,
+    ))
+    .await?;
+
     // All things started up but our temperature. We're running
-    // that in our main task.
+    // that in our main task. Therefore, we will return once the
+    // entity manager has finished.
 
     info!("IoT service ready");
 
@@ -114,6 +141,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         temperature_events_key_secret_path,
         temperature_command_receiver,
     ))
-    .await
-    .map_err(|e| e.into())
+    .await?;
+
+    // If we get here then we are shutting down. Any other task,
+    // such as the projection one, will stop automatically given
+    // that its sender will be dropped.
+
+    Ok(())
 }

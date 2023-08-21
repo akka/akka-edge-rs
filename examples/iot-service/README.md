@@ -27,6 +27,13 @@ RUST_LOG=debug cargo run -- \
   --ss-root-path=/tmp/iot-service/var/lib/confidant
 ```
 
+We must first register the device ids that we wish to receive data for. This is a form
+of authentication where, in the real-world, a shared key between the device and service
+would be conveyed. That key would then be used to encrypt data. We simply use the key
+as a registration mechanism and do not accept data for devices where we have no key.
+
+curl -v -d '"1"' -H"Content-Type: application/json" "127.0.0.1:8080/api/temperature"
+
 You should now be able to query for the current state of a temperature sensor:
 
 ```
