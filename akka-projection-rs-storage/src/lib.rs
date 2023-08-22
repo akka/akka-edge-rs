@@ -9,9 +9,10 @@ pub enum Command {
 }
 
 /// Provides local file system based storage for projection offsets.
-pub async fn run<E, H, SP>(_receiver: Receiver<Command>, _source_provider: SP, _handler: H)
+pub async fn run<E, FSP, H, SP>(_receiver: Receiver<Command>, _source_provider: FSP, _handler: H)
 where
     H: Handler<Envelope = E>,
+    FSP: FnMut(u32) -> Option<SP>,
     SP: SourceProvider<Envelope = E>,
 {
 }

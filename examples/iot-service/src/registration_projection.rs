@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use akka_persistence_rs::Message;
+use akka_persistence_rs::{slice_ranges, Message};
 use akka_persistence_rs_commitlog::EventEnvelope;
 use akka_projection_rs::{Handler, HandlerError};
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
@@ -49,18 +49,32 @@ pub async fn task(
     receiver: mpsc::Receiver<Command>,
     temperature_sender: mpsc::Sender<Message<temperature::Command>>,
 ) {
-    // Establish our source of events as a commit log.
-    let source_provider = CommitLogSourceProvider::new(
-        commit_log,
-        EventEnvelopeMarshaler {
-            events_key_secret_path: Arc::from(events_key_secret_path),
-            secret_store,
-        },
-        "iot-service-projection",
-        registration::EVENTS_TOPIC,
-    );
+    let events_key_secret_path: Arc<str> = Arc::from(events_key_secret_path);
 
+    // When it comes to having a projection sourced from a local
+    // commit log, there's little benefit if having many of them.
+    // We therefore manage all slices from just one projection.
+    let slice_ranges = slice_ranges(1);
+
+    // A closure to establish our source of events as a commit log.
+    let source_provider = |slice| {
+        Some(CommitLogSourceProvider::new(
+            commit_log.clone(),
+            EventEnvelopeMarshaler {
+                events_key_secret_path: events_key_secret_path.clone(),
+                secret_store: secret_store.clone(),
+            },
+            "iot-service-projection",
+            registration::EVENTS_TOPIC,
+            slice_ranges.get(slice as usize).cloned()?,
+        ))
+    };
+
+    // Declare a handler to forward projection events on to the temperature entity.
     let handler = RegistrationHandler { temperature_sender };
 
+    // Finally, start up a projection that will use Streambed storage
+    // to remember the offset consumed. This then permits us to restart
+    // from a specific point in the source given restarts.
     akka_projection_rs_storage::run(receiver, source_provider, handler).await
 }
