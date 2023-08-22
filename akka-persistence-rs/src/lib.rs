@@ -68,7 +68,7 @@ pub const NUMBER_OF_SLICES: u32 = 1024;
 /// evenly distribute all persistence ids over the slices and be able to query the
 /// events for a range of slices.
 pub fn slice_for_persistence_id(persistence_id: &PersistenceId) -> u32 {
-    jdk_string_hashcode(&persistence_id.to_string()) % NUMBER_OF_SLICES
+    (jdk_string_hashcode(&persistence_id.to_string()) % NUMBER_OF_SLICES as i32).unsigned_abs()
 }
 
 /// Split the total number of slices into ranges by the given `number_of_ranges`.
@@ -89,14 +89,14 @@ pub fn slice_ranges(number_of_ranges: u32) -> Vec<Range<u32>> {
 
 // Implementation of the JDK8 string hashcode:
 // https://docs.oracle.com/javase/8/docs/api/java/lang/String.html#hashCode
-fn jdk_string_hashcode(s: &str) -> u32 {
-    let mut hash = Wrapping(0u32);
-    const MULTIPLIER: Wrapping<u32> = Wrapping(31);
+fn jdk_string_hashcode(s: &str) -> i32 {
+    let mut hash = Wrapping(0i32);
+    const MULTIPLIER: Wrapping<i32> = Wrapping(31);
     let count = s.len();
     if count > 0 {
         let mut chars = s.chars();
         for _ in 0..count {
-            hash = hash * MULTIPLIER + Wrapping(chars.next().unwrap() as u32);
+            hash = hash * MULTIPLIER + Wrapping(chars.next().unwrap() as i32);
         }
     }
     hash.0
@@ -122,7 +122,7 @@ mod tests {
                 SmolStr::from("some-entity-type"),
                 SmolStr::from("some-entity-id")
             )),
-            573
+            451
         );
     }
 
