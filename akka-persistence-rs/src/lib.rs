@@ -20,19 +20,13 @@ pub type EntityId = smol_str::SmolStr;
 pub struct PersistenceId {
     pub entity_type: EntityType,
     pub entity_id: EntityId,
-    separator: char,
 }
 
 impl PersistenceId {
     pub fn new(entity_type: EntityType, entity_id: EntityId) -> Self {
-        Self::with_separator(entity_type, entity_id, '|')
-    }
-
-    pub fn with_separator(entity_type: EntityType, entity_id: EntityId, separator: char) -> Self {
         Self {
             entity_type,
             entity_id,
-            separator,
         }
     }
 }
@@ -40,7 +34,7 @@ impl PersistenceId {
 impl Display for PersistenceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.entity_type)?;
-        f.write_char(self.separator)?;
+        f.write_char('|')?;
         f.write_str(&self.entity_id)
     }
 }
