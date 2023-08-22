@@ -3,7 +3,8 @@
 
 use std::sync::Arc;
 
-use akka_persistence_rs::{entity_manager::EventEnvelope, Message};
+use akka_persistence_rs::Message;
+use akka_persistence_rs_commitlog::EventEnvelope;
 use akka_projection_rs::{Handler, HandlerError};
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
 use akka_projection_rs_storage::Command;

@@ -5,7 +5,7 @@ use std::{collections::VecDeque, num::NonZeroUsize, sync::Arc};
 use akka_persistence_rs::{
     effect::{emit_event, reply, unhandled, EffectExt},
     entity::EventSourcedBehavior,
-    entity_manager::{self, EventEnvelope},
+    entity_manager::{self},
     EntityId, Message,
 };
 use akka_persistence_rs_commitlog::{CommitLogEventEnvelopeMarshaler, CommitLogTopicAdapter};
@@ -116,13 +116,13 @@ const EVENT_ID_BIT_MASK: u64 = 0xFFFFFFFF;
 impl CommitLogEventEnvelopeMarshaler<Event> for EventEnvelopeMarshaler {
     type SecretStore = FileSecretStore;
 
-    fn to_compaction_key(envelope: &EventEnvelope<Event>) -> Option<Key> {
-        let record_type = match &envelope.event {
+    fn to_compaction_key(entity_id: &EntityId, event: &Event) -> Option<Key> {
+        let record_type = match event {
             Event::TemperatureRead { .. } => Some(0),
             Event::Registered { .. } => Some(1),
         };
         record_type.and_then(|record_type| {
-            let entity_id = envelope.entity_id.parse::<u32>().ok()?;
+            let entity_id = entity_id.parse::<u32>().ok()?;
             Some(record_type << EVENT_TYPE_BIT_SHIFT | entity_id as u64)
         })
     }

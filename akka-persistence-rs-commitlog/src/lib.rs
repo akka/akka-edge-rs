@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 use akka_persistence_rs::{
-    entity_manager::{EventEnvelope, Handler, SourceProvider},
+    entity_manager::{EventEnvelope as EntityManagerEventEnvelope, Handler, SourceProvider},
     EntityId,
 };
 use async_stream::stream;
@@ -9,10 +9,33 @@ use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{io, marker::PhantomData, pin::Pin, sync::Arc};
 use streambed::{
-    commit_log::{CommitLog, ConsumerRecord, Key, ProducerRecord, Subscription, Topic, TopicRef},
+    commit_log::{
+        CommitLog, ConsumerRecord, Key, Offset, ProducerRecord, Subscription, Topic, TopicRef,
+    },
     secret_store::SecretStore,
 };
 use tokio_stream::{Stream, StreamExt};
+
+/// An envelope wraps a commit log event associated with a specific entity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventEnvelope<E> {
+    pub entity_id: EntityId,
+    pub event: E,
+    pub offset: Offset,
+}
+
+impl<E> EventEnvelope<E> {
+    pub fn new<EI>(entity_id: EI, event: E, offset: Offset) -> Self
+    where
+        EI: Into<EntityId>,
+    {
+        Self {
+            entity_id: entity_id.into(),
+            event,
+            offset,
+        }
+    }
+}
 
 /// Provides the ability to transform the the memory representation of Akka Persistence events from
 /// and to the records that a CommitLog expects. Given the "cbor" feature, we use CBOR for serialization.
@@ -27,7 +50,7 @@ where
     /// Provide a key we can use for the purposes of log compaction.
     /// A key would generally comprise and event type value held in
     /// the high bits, and the entity id in the lower bits.
-    fn to_compaction_key(envelope: &EventEnvelope<E>) -> Option<Key>;
+    fn to_compaction_key(entity_id: &EntityId, event: &E) -> Option<Key>;
 
     /// Extract an entity id from a consumer envelope.
     fn to_entity_id(record: &ConsumerRecord) -> Option<EntityId>;
@@ -52,7 +75,7 @@ where
             |value| ciborium::de::from_reader(value),
         )
         .await
-        .map(|event| EventEnvelope::new(entity_id, event))
+        .map(|event| EventEnvelope::new(entity_id, event, record.offset))
     }
 
     #[cfg(not(feature = "cbor"))]
@@ -66,39 +89,38 @@ where
     async fn producer_record(
         &self,
         topic: Topic,
-        envelope: EventEnvelope<E>,
-    ) -> Option<(ProducerRecord, EventEnvelope<E>)> {
-        let key = Self::to_compaction_key(&envelope)?;
+        entity_id: EntityId,
+        event: E,
+    ) -> Option<ProducerRecord> {
+        let key = Self::to_compaction_key(&entity_id, &event)?;
         let buf = streambed::encrypt_struct(
             self.secret_store(),
-            &self.secret_path(&envelope.entity_id),
+            &self.secret_path(&entity_id),
             |event| {
                 let mut buf = Vec::new();
                 ciborium::ser::into_writer(event, &mut buf).map(|_| buf)
             },
             rand::thread_rng,
-            &envelope.event,
+            &event,
         )
         .await?;
-        Some((
-            ProducerRecord {
-                topic,
-                headers: vec![],
-                timestamp: None,
-                key,
-                value: buf,
-                partition: 0,
-            },
-            envelope,
-        ))
+        Some(ProducerRecord {
+            topic,
+            headers: vec![],
+            timestamp: None,
+            key,
+            value: buf,
+            partition: 0,
+        })
     }
 
     #[cfg(not(feature = "cbor"))]
     async fn producer_record(
         &self,
         topic: Topic,
-        envelope: EventEnvelope<E>,
-    ) -> Option<(ProducerRecord, EventEnvelope<E>)>;
+        entity_id: EntityId,
+        event: E,
+    ) -> Option<ProducerRecord>;
 }
 
 /// Adapts a Streambed CommitLog for use with Akka Persistence.
@@ -153,7 +175,8 @@ where
 {
     async fn source_initial(
         &mut self,
-    ) -> io::Result<Pin<Box<dyn Stream<Item = EventEnvelope<E>> + Send + 'async_trait>>> {
+    ) -> io::Result<Pin<Box<dyn Stream<Item = EntityManagerEventEnvelope<E>> + Send + 'async_trait>>>
+    {
         let consumer_records = produce_to_last_offset(
             &self.commit_log,
             &self.consumer_group_name,
@@ -170,7 +193,10 @@ where
                         if let Some(envelope) =
                             marshaler.envelope(record_entity_id, consumer_record).await
                         {
-                            yield envelope;
+                            yield EntityManagerEventEnvelope::new(
+                                envelope.entity_id,
+                                envelope.event,
+                            );
                         }
                     }
                 }
@@ -183,7 +209,8 @@ where
     async fn source(
         &mut self,
         entity_id: &EntityId,
-    ) -> io::Result<Pin<Box<dyn Stream<Item = EventEnvelope<E>> + Send + 'async_trait>>> {
+    ) -> io::Result<Pin<Box<dyn Stream<Item = EntityManagerEventEnvelope<E>> + Send + 'async_trait>>>
+    {
         let consumer_records = produce_to_last_offset(
             &self.commit_log,
             &self.consumer_group_name,
@@ -201,7 +228,10 @@ where
                             if let Some(envelope) =
                                 marshaler.envelope(record_entity_id, consumer_record).await
                             {
-                                yield envelope;
+                                yield EntityManagerEventEnvelope::new(
+                                    envelope.entity_id,
+                                    envelope.event,
+                                );
                             }
                         }
                     }
@@ -251,12 +281,19 @@ impl<CL, E, M> Handler<E> for CommitLogTopicAdapter<CL, E, M>
 where
     CL: CommitLog,
     M: CommitLogEventEnvelopeMarshaler<E> + Send + Sync,
-    for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
+    for<'async_trait> E: Clone + DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
-    async fn process(&mut self, envelope: EventEnvelope<E>) -> io::Result<EventEnvelope<E>> {
-        let (producer_record, envelope) = self
+    async fn process(
+        &mut self,
+        envelope: EntityManagerEventEnvelope<E>,
+    ) -> io::Result<EntityManagerEventEnvelope<E>> {
+        let producer_record = self
             .marshaler
-            .producer_record(self.topic.clone(), envelope)
+            .producer_record(
+                self.topic.clone(),
+                envelope.entity_id.clone(),
+                envelope.event.clone(),
+            )
             .await
             .ok_or_else(|| {
                 io::Error::new(
@@ -294,7 +331,7 @@ mod tests {
 
     // Scaffolding
 
-    #[derive(Deserialize, Serialize)]
+    #[derive(Clone, Deserialize, Serialize)]
     struct MyEvent {
         value: String,
     }
@@ -388,7 +425,7 @@ mod tests {
     impl CommitLogEventEnvelopeMarshaler<MyEvent> for MyEventMarshaler {
         type SecretStore = NoopSecretStore;
 
-        fn to_compaction_key(_envelope: &EventEnvelope<MyEvent>) -> Option<Key> {
+        fn to_compaction_key(_entity_id: &EntityId, _event: &MyEvent) -> Option<Key> {
             panic!("should not be called")
         }
 
@@ -418,30 +455,28 @@ mod tests {
             Some(EventEnvelope {
                 entity_id,
                 event,
-                deletion_event: false,
+                offset: 0,
             })
         }
 
         async fn producer_record(
             &self,
             topic: Topic,
-            envelope: EventEnvelope<MyEvent>,
-        ) -> Option<(ProducerRecord, EventEnvelope<MyEvent>)> {
+            entity_id: EntityId,
+            event: MyEvent,
+        ) -> Option<ProducerRecord> {
             let headers = vec![Header {
                 key: "entity-id".to_string(),
-                value: envelope.entity_id.as_bytes().into(),
+                value: entity_id.as_bytes().into(),
             }];
-            Some((
-                ProducerRecord {
-                    topic,
-                    headers,
-                    timestamp: None,
-                    key: 0,
-                    value: envelope.event.value.clone().into_bytes(),
-                    partition: 0,
-                },
-                envelope,
-            ))
+            Some(ProducerRecord {
+                topic,
+                headers,
+                timestamp: None,
+                key: 0,
+                value: event.value.clone().into_bytes(),
+                partition: 0,
+            })
         }
     }
 
@@ -478,7 +513,7 @@ mod tests {
         // Process some events and then produce a stream.
 
         let envelope = adapter
-            .process(EventEnvelope::new(
+            .process(EntityManagerEventEnvelope::new(
                 entity_id.clone(),
                 MyEvent {
                     value: "first-event".to_string(),
@@ -489,7 +524,7 @@ mod tests {
         assert_eq!(envelope.entity_id, entity_id);
 
         let envelope = adapter
-            .process(EventEnvelope::new(
+            .process(EntityManagerEventEnvelope::new(
                 entity_id.clone(),
                 MyEvent {
                     value: "second-event".to_string(),
@@ -502,7 +537,7 @@ mod tests {
         // Produce to a different entity id, so that we can test out the filtering next.
 
         adapter
-            .process(EventEnvelope::new(
+            .process(EntityManagerEventEnvelope::new(
                 "some-other-entity-id",
                 MyEvent {
                     value: "third-event".to_string(),

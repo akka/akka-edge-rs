@@ -2,8 +2,8 @@
 
 use std::{marker::PhantomData, pin::Pin};
 
-use akka_persistence_rs::{entity_manager::EventEnvelope, EntityType};
-use akka_persistence_rs_commitlog::CommitLogEventEnvelopeMarshaler;
+use akka_persistence_rs::EntityType;
+use akka_persistence_rs_commitlog::{CommitLogEventEnvelopeMarshaler, EventEnvelope};
 use akka_projection_rs::{Offset, SourceProvider};
 use serde::{de::DeserializeOwned, Serialize};
 use streambed::commit_log::{CommitLog, Topic, TopicRef};
