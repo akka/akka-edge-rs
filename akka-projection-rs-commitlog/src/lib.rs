@@ -1,9 +1,9 @@
 #![doc = include_str!("../README.md")]
 
-use std::{marker::PhantomData, pin::Pin};
+use std::{marker::PhantomData, ops::Range, pin::Pin};
 
-use akka_persistence_rs::{entity_manager::EventEnvelope, EntityType};
-use akka_persistence_rs_commitlog::CommitLogEventEnvelopeMarshaler;
+use akka_persistence_rs::EntityType;
+use akka_persistence_rs_commitlog::{CommitLogEventEnvelopeMarshaler, EventEnvelope};
 use akka_projection_rs::{Offset, SourceProvider};
 use serde::{de::DeserializeOwned, Serialize};
 use streambed::commit_log::{CommitLog, Topic, TopicRef};
@@ -14,16 +14,24 @@ pub struct CommitLogSourceProvider<CL, E, M> {
     _commit_log: CL,
     _consumer_group_name: String,
     _marshaler: M,
+    _slice_range: Range<u32>,
     _topic: Topic,
     phantom: PhantomData<E>,
 }
 
 impl<CL, E, M> CommitLogSourceProvider<CL, E, M> {
-    pub fn new(commit_log: CL, marshaler: M, consumer_group_name: &str, topic: TopicRef) -> Self {
+    pub fn new(
+        commit_log: CL,
+        marshaler: M,
+        consumer_group_name: &str,
+        topic: TopicRef,
+        slice_range: Range<u32>,
+    ) -> Self {
         Self {
             _commit_log: commit_log,
             _consumer_group_name: consumer_group_name.into(),
             _marshaler: marshaler,
+            _slice_range: slice_range,
             _topic: topic.into(),
             phantom: PhantomData,
         }

@@ -1,8 +1,10 @@
 use std::{marker::PhantomData, pin::Pin};
 
-use akka_persistence_rs::{entity_manager::EventEnvelope, EntityType};
+use akka_persistence_rs::EntityType;
 use akka_projection_rs::{Offset, SourceProvider};
 use tokio_stream::Stream;
+
+use crate::EventEnvelope;
 
 pub struct GrpcSourceProvider<E> {
     phantom: PhantomData<E>,
