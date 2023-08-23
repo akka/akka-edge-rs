@@ -12,7 +12,7 @@ use akka_persistence_rs_commitlog::{CommitLogEventEnvelopeMarshaler, CommitLogTo
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
-use streambed::commit_log::Key;
+use streambed::commit_log::{Key, Topic};
 use streambed_confidant::FileSecretStore;
 use streambed_logged::{compaction::NthKeyBasedRetention, FileLog};
 use tokio::sync::{mpsc, oneshot};
@@ -54,7 +54,7 @@ impl EventSourcedBehavior for Behavior {
         command: Self::Command,
     ) -> Box<dyn akka_persistence_rs::effect::Effect<Self>> {
         match command {
-            Command::Get { reply_to } if !state.history.is_empty() => {
+            Command::Get { reply_to } if !state.secret.is_empty() => {
                 reply(reply_to, state.history.clone().into()).boxed()
             }
 
@@ -164,9 +164,11 @@ pub async fn task(
     // events are removed. In our scenario, unwanted events can be removed when
     // the exceed MAX_HISTORY_EVENTS as we do not have a requirement to ever
     // return more than that.
+    let events_topic = Topic::from(EVENTS_TOPIC);
+
     commit_log
         .register_compaction(
-            EVENTS_TOPIC.to_string(),
+            events_topic.clone(),
             NthKeyBasedRetention::new(MAX_TOPIC_COMPACTION_KEYS, MAX_HISTORY_EVENTS),
         )
         .await
@@ -179,7 +181,7 @@ pub async fn task(
             secret_store,
         },
         "iot-service",
-        EVENTS_TOPIC,
+        events_topic,
     );
 
     entity_manager::run(

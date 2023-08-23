@@ -75,6 +75,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let temperature_events_key_secret_path =
         format!("{}/secrets.temperature-events.key", args.ss_args.ss_ns);
 
+    // The path of a key to use to encrypt offsets for registration projections. We'll
+    // just re-use the above key for convenience, but ordinarily, these keys would be
+    // different.
+    let registration_offset_key_secret_path = temperature_events_key_secret_path.clone();
+
     if let Ok(None) = ss.get_secret(&temperature_events_key_secret_path).await {
         // If we can't write this initial secret then all bets are off
         let mut key = vec![0; 16];
@@ -116,18 +121,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ss.clone(),
         temperature_events_key_secret_path.clone(),
         registration_command_receiver,
-    ))
-    .await?;
+    ));
 
     // Start up a task to manage registration projections
     tokio::spawn(registration_projection::task(
         cl.clone(),
         ss.clone(),
         temperature_events_key_secret_path.clone(),
+        registration_offset_key_secret_path.clone(),
         registration_projection_command_receiver,
+        args.cl_args.cl_root_path.join("registration-offsets"),
         temperature_command,
-    ))
-    .await?;
+    ));
 
     // All things started up but our temperature. We're running
     // that in our main task. Therefore, we will return once the

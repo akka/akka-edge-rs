@@ -59,7 +59,7 @@ impl<C> Message<C> {
 }
 
 /// A slice is deterministically defined based on the persistence id.
-/// `numberOfSlices` is not configurable because changing the value would result in
+/// `NUMBER_OF_SLICES` is not configurable because changing the value would result in
 /// different slice for a persistence id than what was used before, which would
 /// result in invalid events_by_slices call on a source provider.
 pub const NUMBER_OF_SLICES: u32 = 1024;

@@ -31,7 +31,7 @@ pub trait Handler {
 
     /// Process an envelope.
     /// An offset will be persisted given a successful result.
-    async fn process(&self, envelope: Self::Envelope) -> Result<(), HandlerError>;
+    async fn process(&self, envelope: Self::Envelope) -> Result<Offset, HandlerError>;
 }
 
 /// Errors for event processing by a handler.
@@ -42,9 +42,6 @@ pub struct SourceProviderError;
 pub trait SourceProvider {
     /// The envelope processed by the provider.
     type Envelope;
-
-    /// The type that describes offsets into a journal
-    type Offset;
 
     /// Query events for given slices. A slice is deterministically defined based on the persistence id. The purpose is to
     /// evenly distribute all persistence ids over the slices.
@@ -69,10 +66,11 @@ pub trait SourceProvider {
     ///
     /// The stream is not completed when it reaches the end of the currently stored events, but it continues to push new
     /// events when new events are persisted.
-    fn events_by_slices<Event>(
+    async fn events_by_slices(
+        &self,
         entity_type: EntityType,
         min_slice: u32,
         max_slice: u32,
-        offset: Self::Offset,
-    ) -> Pin<Box<dyn Stream<Item = Self::Envelope> + Send>>;
+        offset: Option<Offset>,
+    ) -> Pin<Box<dyn Stream<Item = Self::Envelope> + Send + 'async_trait>>;
 }

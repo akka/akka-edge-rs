@@ -7,6 +7,14 @@ edition = "2021"
 
 [dependencies]
 async-trait = { workspace = true }
+ciborium = { workspace = true }
+log = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+streambed = { workspace = true }
+streambed-storage = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 
+akka-persistence-rs = { path = "../akka-persistence-rs" }
 akka-projection-rs = { path = "../akka-projection-rs" }
