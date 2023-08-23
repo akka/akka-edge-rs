@@ -1,7 +1,7 @@
 use std::{marker::PhantomData, pin::Pin};
 
-use akka_persistence_rs::EntityType;
-use akka_projection_rs::{Offset, SourceProvider};
+use akka_persistence_rs::{EntityType, Offset};
+use akka_projection_rs::SourceProvider;
 use async_trait::async_trait;
 use tokio_stream::Stream;
 

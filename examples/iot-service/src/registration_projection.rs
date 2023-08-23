@@ -5,7 +5,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use akka_persistence_rs::Message;
 use akka_persistence_rs_commitlog::EventEnvelope;
-use akka_projection_rs::{Handler, HandlerError, Offset};
+use akka_projection_rs::{Handler, HandlerError};
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
 use akka_projection_rs_storage::Command;
 use async_trait::async_trait;
@@ -29,7 +29,7 @@ pub struct RegistrationHandler {
 impl Handler for RegistrationHandler {
     type Envelope = EventEnvelope<registration::Event>;
 
-    async fn process(&self, envelope: Self::Envelope) -> Result<Offset, HandlerError> {
+    async fn process(&self, envelope: Self::Envelope) -> Result<(), HandlerError> {
         let registration::Event::Registered { secret } = envelope.event;
         self.temperature_sender
             .send(Message::new(
@@ -37,7 +37,7 @@ impl Handler for RegistrationHandler {
                 temperature::Command::Register { secret },
             ))
             .await
-            .map(|_| Offset::Sequence(envelope.offset))
+            .map(|_| ())
             .map_err(|_| HandlerError)
     }
 }

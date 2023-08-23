@@ -2,14 +2,17 @@
 
 use akka_persistence_rs::{
     entity_manager::{EventEnvelope as EntityManagerEventEnvelope, Handler, SourceProvider},
-    EntityId,
+    EntityId, Offset, WithOffset,
 };
 use async_stream::stream;
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{io, marker::PhantomData, pin::Pin, sync::Arc};
 use streambed::{
-    commit_log::{CommitLog, ConsumerRecord, Key, Offset, ProducerRecord, Subscription, Topic},
+    commit_log::{
+        CommitLog, ConsumerRecord, Key, Offset as CommitLogOffset, ProducerRecord, Subscription,
+        Topic,
+    },
     secret_store::SecretStore,
 };
 use tokio_stream::{Stream, StreamExt};
@@ -19,11 +22,11 @@ use tokio_stream::{Stream, StreamExt};
 pub struct EventEnvelope<E> {
     pub entity_id: EntityId,
     pub event: E,
-    pub offset: Offset,
+    pub offset: CommitLogOffset,
 }
 
 impl<E> EventEnvelope<E> {
-    pub fn new<EI>(entity_id: EI, event: E, offset: Offset) -> Self
+    pub fn new<EI>(entity_id: EI, event: E, offset: CommitLogOffset) -> Self
     where
         EI: Into<EntityId>,
     {
@@ -32,6 +35,12 @@ impl<E> EventEnvelope<E> {
             event,
             offset,
         }
+    }
+}
+
+impl<E> WithOffset for EventEnvelope<E> {
+    fn offset(&self) -> Offset {
+        Offset::Sequence(self.offset)
     }
 }
 

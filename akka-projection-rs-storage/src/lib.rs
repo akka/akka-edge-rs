@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
-use akka_persistence_rs::EntityType;
-use akka_projection_rs::{Handler, Offset, SourceProvider};
+use akka_persistence_rs::{EntityType, Offset, WithOffset};
+use akka_projection_rs::{Handler, SourceProvider};
 use log::error;
 use serde::{Deserialize, Serialize};
 use streambed::{commit_log::Offset as CommitLogOffset, secret_store::SecretStore};
@@ -29,6 +29,7 @@ pub async fn run<E, FSP, H, SP>(
     mut source_provider: FSP,
     handler: H,
 ) where
+    E: WithOffset,
     H: Handler<Envelope = E>,
     FSP: FnMut(u32) -> Option<SP>,
     SP: SourceProvider<Envelope = E>,
@@ -66,7 +67,8 @@ pub async fn run<E, FSP, H, SP>(
             tokio::select! {
                 envelope = source.next() => {
                     if let Some(envelope) = envelope {
-                        if let Ok(Offset::Sequence(offset)) = handler.process(envelope).await {
+                        let Offset::Sequence(offset) = envelope.offset();
+                        if  handler.process(envelope).await.is_ok() {
                             storable_state.last_offset = Some(offset);
                             if streambed_storage::save_struct(
                                 state_storage_path,
@@ -79,7 +81,6 @@ pub async fn run<E, FSP, H, SP>(
                             .await.is_err() {
                                 error!("Cannot persist offsets");
                             }
-
                         }
                     }
                 }

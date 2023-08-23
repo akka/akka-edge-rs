@@ -2,9 +2,9 @@
 
 use std::{marker::PhantomData, pin::Pin};
 
-use akka_persistence_rs::EntityType;
+use akka_persistence_rs::{EntityType, Offset};
 use akka_persistence_rs_commitlog::{CommitLogEventEnvelopeMarshaler, EventEnvelope};
-use akka_projection_rs::{Offset, SourceProvider};
+use akka_projection_rs::SourceProvider;
 use async_stream::stream;
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};

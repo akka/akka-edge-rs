@@ -4,21 +4,9 @@
 
 use std::pin::Pin;
 
-use akka_persistence_rs::EntityType;
+use akka_persistence_rs::{EntityType, Offset};
 use async_trait::async_trait;
 use tokio_stream::Stream;
-
-pub enum Offset {
-    /// Corresponds to an ordered sequence number for the events. Note that the corresponding
-    /// offset of each event is provided in an Envelope,
-    /// which makes it possible to resume the stream at a later point from a given offset.
-    ///
-    /// The `offset` is exclusive, i.e. the event with the exact same sequence number will not be included
-    /// in the returned stream. This means that you can use the offset that is returned in an `Envelope`
-    /// as the `offset` parameter in a subsequent query.
-    ///
-    Sequence(u64),
-}
 
 /// Errors for event processing by a handler.
 pub struct HandlerError;
@@ -30,8 +18,7 @@ pub trait Handler {
     type Envelope;
 
     /// Process an envelope.
-    /// An offset will be persisted given a successful result.
-    async fn process(&self, envelope: Self::Envelope) -> Result<Offset, HandlerError>;
+    async fn process(&self, envelope: Self::Envelope) -> Result<(), HandlerError>;
 }
 
 /// Errors for event processing by a handler.
