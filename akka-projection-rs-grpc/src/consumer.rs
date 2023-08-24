@@ -1,6 +1,6 @@
-use std::{marker::PhantomData, pin::Pin};
+use std::{future::Future, marker::PhantomData, pin::Pin};
 
-use akka_persistence_rs::{EntityType, Offset};
+use akka_persistence_rs::Offset;
 use akka_projection_rs::SourceProvider;
 use async_trait::async_trait;
 use tokio_stream::Stream;
@@ -18,13 +18,14 @@ where
 {
     type Envelope = EventEnvelope<E>;
 
-    async fn events_by_slices(
+    async fn source<F, FR>(
         &self,
-        _entity_type: EntityType,
-        _min_slice: u32,
-        _max_slice: u32,
-        _offset: Option<Offset>,
-    ) -> Pin<Box<dyn Stream<Item = EventEnvelope<E>> + Send + 'async_trait>> {
+        _offset: F,
+    ) -> Pin<Box<dyn Stream<Item = Self::Envelope> + Send + 'async_trait>>
+    where
+        F: FnOnce() -> FR + Send,
+        FR: Future<Output = Option<Offset>> + Send,
+    {
         todo!()
     }
 }

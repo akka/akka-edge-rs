@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use akka_persistence_rs::{EntityType, Offset, WithOffset};
+use akka_persistence_rs::{Offset, WithOffset};
 use akka_projection_rs::{Handler, SourceProvider};
 use log::error;
 use serde::{Deserialize, Serialize};
@@ -34,28 +34,22 @@ pub async fn run<E, FSP, H, SP>(
     FSP: FnMut(u32) -> Option<SP>,
     SP: SourceProvider<Envelope = E>,
 {
-    // Source our last offset recorded, if we have one.
-
-    let mut storable_state =
-        streambed_storage::load_struct(state_storage_path, secret_store, secret_path, |bytes| {
-            ciborium::de::from_reader::<StorableState, _>(bytes)
-        })
-        .await
-        .unwrap_or_default();
-
     // For now, we're going to produce a source provider for just one slice.
     // When we implement the gRPC consumer, we will likely have to do more.
 
     if let Some(source_provider) = source_provider(0) {
-        // FIXME what to provide for entity type.
-        // FIXME what to provide for slice min/max.
         let mut source = source_provider
-            .events_by_slices(
-                EntityType::from(""),
-                0,
-                0,
-                storable_state.last_offset.map(Offset::Sequence),
-            )
+            .source(|| async {
+                streambed_storage::load_struct(
+                    state_storage_path,
+                    secret_store,
+                    secret_path,
+                    |bytes| ciborium::de::from_reader::<StorableState, _>(bytes),
+                )
+                .await
+                .ok()
+                .and_then(|s| s.last_offset.map(Offset::Sequence))
+            })
             .await;
 
         let serializer = |state: &StorableState| {
@@ -69,7 +63,10 @@ pub async fn run<E, FSP, H, SP>(
                     if let Some(envelope) = envelope {
                         let Offset::Sequence(offset) = envelope.offset();
                         if  handler.process(envelope).await.is_ok() {
-                            storable_state.last_offset = Some(offset);
+                            // FIXME: Make this a periodic task
+                            let storable_state = StorableState {
+                                last_offset: Some(offset)
+                            };
                             if streambed_storage::save_struct(
                                 state_storage_path,
                                 secret_store,
@@ -77,8 +74,7 @@ pub async fn run<E, FSP, H, SP>(
                                 serializer,
                                 rand::thread_rng,
                                 &storable_state
-                            )
-                            .await.is_err() {
+                            ).await.is_err() {
                                 error!("Cannot persist offsets");
                             }
                         }

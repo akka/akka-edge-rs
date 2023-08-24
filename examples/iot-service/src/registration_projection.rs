@@ -3,7 +3,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use akka_persistence_rs::Message;
+use akka_persistence_rs::{EntityType, Message};
 use akka_persistence_rs_commitlog::EventEnvelope;
 use akka_projection_rs::{Handler, HandlerError};
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
@@ -54,16 +54,23 @@ pub async fn task(
 ) {
     let events_key_secret_path: Arc<str> = Arc::from(events_key_secret_path);
 
+    // When it comes to having a projection sourced from a local
+    // commit log, there's little benefit if having many of them.
+    // We therefore manage all slices from just one projection.
+    let slice_ranges = akka_persistence_rs::slice_ranges(1);
+
     // A closure to establish our source of events as a commit log.
-    let source_provider = |_slice| {
+    let source_provider = |slice| {
         Some(CommitLogSourceProvider::new(
             commit_log.clone(),
             EventEnvelopeMarshaler {
                 events_key_secret_path: events_key_secret_path.clone(),
                 secret_store: secret_store.clone(),
             },
+            slice_ranges.get(slice as usize).cloned()?,
             "iot-service-projection",
             Topic::from(registration::EVENTS_TOPIC),
+            EntityType::from(registration::EVENTS_TOPIC),
         ))
     };
 
