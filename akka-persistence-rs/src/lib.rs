@@ -118,8 +118,6 @@ pub trait WithOffset {
 
 #[cfg(test)]
 mod tests {
-    use smol_str::SmolStr;
-
     use super::*;
 
     #[test]
@@ -133,8 +131,8 @@ mod tests {
     fn test_slice_for_persistence_id() {
         assert_eq!(
             PersistenceId::new(
-                SmolStr::from("some-entity-type"),
-                SmolStr::from("some-entity-id")
+                EntityType::from("some-entity-type"),
+                EntityId::from("some-entity-id")
             )
             .slice(),
             451
