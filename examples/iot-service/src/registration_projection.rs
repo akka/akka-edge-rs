@@ -1,14 +1,15 @@
 //! Handle registration projection concerns
 //!
 
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
-use akka_persistence_rs::{slice_ranges, Message};
+use akka_persistence_rs::{EntityType, Message};
 use akka_persistence_rs_commitlog::EventEnvelope;
 use akka_projection_rs::{Handler, HandlerError};
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
 use akka_projection_rs_storage::Command;
 use async_trait::async_trait;
+use streambed::commit_log::Topic;
 use streambed_confidant::FileSecretStore;
 use streambed_logged::FileLog;
 use tokio::sync::mpsc;
@@ -46,7 +47,9 @@ pub async fn task(
     commit_log: FileLog,
     secret_store: FileSecretStore,
     events_key_secret_path: String,
+    offsets_key_secret_path: String,
     receiver: mpsc::Receiver<Command>,
+    state_storage_path: PathBuf,
     temperature_sender: mpsc::Sender<Message<temperature::Command>>,
 ) {
     let events_key_secret_path: Arc<str> = Arc::from(events_key_secret_path);
@@ -54,7 +57,7 @@ pub async fn task(
     // When it comes to having a projection sourced from a local
     // commit log, there's little benefit if having many of them.
     // We therefore manage all slices from just one projection.
-    let slice_ranges = slice_ranges(1);
+    let slice_ranges = akka_persistence_rs::slice_ranges(1);
 
     // A closure to establish our source of events as a commit log.
     let source_provider = |slice| {
@@ -64,9 +67,10 @@ pub async fn task(
                 events_key_secret_path: events_key_secret_path.clone(),
                 secret_store: secret_store.clone(),
             },
-            "iot-service-projection",
-            registration::EVENTS_TOPIC,
             slice_ranges.get(slice as usize).cloned()?,
+            "iot-service-projection",
+            Topic::from(registration::EVENTS_TOPIC),
+            EntityType::from(registration::EVENTS_TOPIC),
         ))
     };
 
@@ -76,5 +80,13 @@ pub async fn task(
     // Finally, start up a projection that will use Streambed storage
     // to remember the offset consumed. This then permits us to restart
     // from a specific point in the source given restarts.
-    akka_projection_rs_storage::run(receiver, source_provider, handler).await
+    akka_projection_rs_storage::run(
+        &secret_store,
+        &offsets_key_secret_path,
+        &state_storage_path,
+        receiver,
+        source_provider,
+        handler,
+    )
+    .await
 }

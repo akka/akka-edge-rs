@@ -13,7 +13,7 @@ use akka_persistence_rs_commitlog::{CommitLogEventEnvelopeMarshaler, CommitLogTo
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
-use streambed::commit_log::Key;
+use streambed::commit_log::{Key, Topic};
 use streambed_confidant::FileSecretStore;
 use streambed_logged::{compaction::KeyBasedRetention, FileLog};
 use tokio::sync::mpsc;
@@ -126,9 +126,10 @@ pub async fn task(
     events_key_secret_path: String,
     command_receiver: mpsc::Receiver<Message<Command>>,
 ) {
+    let events_topic = Topic::from(EVENTS_TOPIC);
     commit_log
         .register_compaction(
-            EVENTS_TOPIC.to_string(),
+            events_topic.clone(),
             KeyBasedRetention::new(MAX_TOPIC_COMPACTION_KEYS),
         )
         .await
@@ -141,7 +142,7 @@ pub async fn task(
             secret_store,
         },
         "iot-service",
-        EVENTS_TOPIC,
+        events_topic,
     );
 
     entity_manager::run(

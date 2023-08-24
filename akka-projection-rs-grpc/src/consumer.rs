@@ -1,7 +1,8 @@
-use std::{marker::PhantomData, pin::Pin};
+use std::{future::Future, marker::PhantomData, pin::Pin};
 
-use akka_persistence_rs::EntityType;
-use akka_projection_rs::{Offset, SourceProvider};
+use akka_persistence_rs::Offset;
+use akka_projection_rs::SourceProvider;
+use async_trait::async_trait;
 use tokio_stream::Stream;
 
 use crate::EventEnvelope;
@@ -10,19 +11,21 @@ pub struct GrpcSourceProvider<E> {
     phantom: PhantomData<E>,
 }
 
-impl<E> SourceProvider for GrpcSourceProvider<E> {
-    /// The envelope processed by the provider.
+#[async_trait]
+impl<E> SourceProvider for GrpcSourceProvider<E>
+where
+    E: Sync,
+{
     type Envelope = EventEnvelope<E>;
 
-    /// The type that describes offsets into a journal
-    type Offset = Offset;
-
-    fn events_by_slices<Event>(
-        _entity_type: EntityType,
-        _min_slice: u32,
-        _max_slice: u32,
-        _offset: Offset,
-    ) -> Pin<Box<dyn Stream<Item = EventEnvelope<E>> + Send>> {
+    async fn source<F, FR>(
+        &self,
+        _offset: F,
+    ) -> Pin<Box<dyn Stream<Item = Self::Envelope> + Send + 'async_trait>>
+    where
+        F: FnOnce() -> FR + Send,
+        FR: Future<Output = Option<Offset>> + Send,
+    {
         todo!()
     }
 }

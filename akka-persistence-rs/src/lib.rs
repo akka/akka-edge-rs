@@ -16,60 +16,11 @@ pub type EntityType = smol_str::SmolStr;
 /// Uniquely identifies an entity, or entity instance.
 pub type EntityId = smol_str::SmolStr;
 
-/// A namespaced entity id given an entity type.
-pub struct PersistenceId {
-    pub entity_type: EntityType,
-    pub entity_id: EntityId,
-}
-
-impl PersistenceId {
-    pub fn new(entity_type: EntityType, entity_id: EntityId) -> Self {
-        Self {
-            entity_type,
-            entity_id,
-        }
-    }
-}
-
-impl Display for PersistenceId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.entity_type)?;
-        f.write_char('|')?;
-        f.write_str(&self.entity_id)
-    }
-}
-
-/// A message encapsulates a command that is addressed to a specific entity.
-#[derive(Debug, PartialEq)]
-pub struct Message<C> {
-    pub entity_id: EntityId,
-    pub command: C,
-}
-
-impl<C> Message<C> {
-    pub fn new<EI>(entity_id: EI, command: C) -> Self
-    where
-        EI: Into<EntityId>,
-    {
-        Self {
-            entity_id: entity_id.into(),
-            command,
-        }
-    }
-}
-
 /// A slice is deterministically defined based on the persistence id.
-/// `numberOfSlices` is not configurable because changing the value would result in
+/// `NUMBER_OF_SLICES` is not configurable because changing the value would result in
 /// different slice for a persistence id than what was used before, which would
 /// result in invalid events_by_slices call on a source provider.
 pub const NUMBER_OF_SLICES: u32 = 1024;
-
-/// A slice is deterministically defined based on the persistence id. The purpose is to
-/// evenly distribute all persistence ids over the slices and be able to query the
-/// events for a range of slices.
-pub fn slice_for_persistence_id(persistence_id: &PersistenceId) -> u32 {
-    (jdk_string_hashcode(&persistence_id.to_string()) % NUMBER_OF_SLICES as i32).unsigned_abs()
-}
 
 /// Split the total number of slices into ranges by the given `number_of_ranges`.
 /// For example, `NUMBER_OF_SLICES` is 1024 and given 4 `number_of_ranges` this method will
@@ -102,10 +53,71 @@ fn jdk_string_hashcode(s: &str) -> i32 {
     hash.0
 }
 
+/// A namespaced entity id given an entity type.
+pub struct PersistenceId {
+    pub entity_type: EntityType,
+    pub entity_id: EntityId,
+}
+
+impl PersistenceId {
+    pub fn new(entity_type: EntityType, entity_id: EntityId) -> Self {
+        Self {
+            entity_type,
+            entity_id,
+        }
+    }
+
+    pub fn slice(&self) -> u32 {
+        (jdk_string_hashcode(&self.to_string()) % NUMBER_OF_SLICES as i32).unsigned_abs()
+    }
+}
+
+impl Display for PersistenceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.entity_type)?;
+        f.write_char('|')?;
+        f.write_str(&self.entity_id)
+    }
+}
+
+/// A message encapsulates a command that is addressed to a specific entity.
+#[derive(Debug, PartialEq)]
+pub struct Message<C> {
+    pub entity_id: EntityId,
+    pub command: C,
+}
+
+impl<C> Message<C> {
+    pub fn new<EI>(entity_id: EI, command: C) -> Self
+    where
+        EI: Into<EntityId>,
+    {
+        Self {
+            entity_id: entity_id.into(),
+            command,
+        }
+    }
+}
+
+pub enum Offset {
+    /// Corresponds to an ordered sequence number for the events. Note that the corresponding
+    /// offset of each event is provided in an Envelope,
+    /// which makes it possible to resume the stream at a later point from a given offset.
+    ///
+    /// The `offset` is exclusive, i.e. the event with the exact same sequence number will not be included
+    /// in the returned stream. This means that you can use the offset that is returned in an `Envelope`
+    /// as the `offset` parameter in a subsequent query.
+    ///
+    Sequence(u64),
+}
+
+/// Implemented by structures that can return an offset.
+pub trait WithOffset {
+    fn offset(&self) -> Offset;
+}
+
 #[cfg(test)]
 mod tests {
-    use smol_str::SmolStr;
-
     use super::*;
 
     #[test]
@@ -118,10 +130,11 @@ mod tests {
     #[test]
     fn test_slice_for_persistence_id() {
         assert_eq!(
-            slice_for_persistence_id(&PersistenceId::new(
-                SmolStr::from("some-entity-type"),
-                SmolStr::from("some-entity-id")
-            )),
+            PersistenceId::new(
+                EntityType::from("some-entity-type"),
+                EntityId::from("some-entity-id")
+            )
+            .slice(),
             451
         );
     }

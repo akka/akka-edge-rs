@@ -32,15 +32,26 @@ of authentication where, in the real-world, a shared key between the device and 
 would be conveyed. That key would then be used to encrypt data. We simply use the key
 as a registration mechanism and do not accept data for devices where we have no key.
 
-curl -v -d '"1"' -H"Content-Type: application/json" "127.0.0.1:8080/api/temperature"
-
-You should now be able to query for the current state of a temperature sensor:
+Let's first query for a sensor's data... it will fail as we have no sensors yet:
 
 ```
 curl -v "127.0.0.1:8080/api/temperature/1"
 ```
 
-You should also be able to post database events to the UDP socket. Note that
+So, let's now provision one:
+
+```
+curl -v -d '"1"' -H"Content-Type: application/json" "127.0.0.1:8080/api/temperature"
+```
+
+You should now be able to query for the current state of a temperature sensor, although
+they'll be no observations recorded for it yet:
+
+```
+curl -v "127.0.0.1:8080/api/temperature/1"
+```
+
+Let's now post database events to the UDP socket so that the sensor has observations. Note that
 we're using Postcard to deserialize binary data. Postcard uses variable length
 integers where the top bit, when set, indicates that the next byte also contains
 data. See [Postcard](https://docs.rs/postcard/latest/postcard/) for more details.
@@ -50,7 +61,11 @@ echo -n "\x01\x02" | nc -w0 127.0.0.1 -u 8081
 ```
 
 You should see a `DEBUG` log indicating that the post has been received. You should
-also be able to query the database again with the id that was sent (`1`).
+also be able to query the database again with the id that was sent (`1`):
+
+```
+curl -v "127.0.0.1:8080/api/temperature/1"
+```
 
 You should also be able to see events being written to the log file store itself:
 

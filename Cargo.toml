@@ -29,9 +29,10 @@ rand = "0.8"
 scopeguard = "1.1"
 serde = "1.0.151"
 smol_str = "0.2.0"
-streambed = { git = "https://github.com/streambed/streambed-rs.git", rev = "4b7e1561666bc1860339d27f5abf9be246ef5ad9" }
-streambed-confidant = { git = "https://github.com/streambed/streambed-rs.git", rev = "4b7e1561666bc1860339d27f5abf9be246ef5ad9" }
-streambed-logged = { git = "https://github.com/streambed/streambed-rs.git", rev = "4b7e1561666bc1860339d27f5abf9be246ef5ad9" }
+streambed = { git = "https://github.com/streambed/streambed-rs.git", rev = "d343171f7ec85cc028674115c8df30150b741ef6" }
+streambed-confidant = { git = "https://github.com/streambed/streambed-rs.git", rev = "d343171f7ec85cc028674115c8df30150b741ef6" }
+streambed-logged = { git = "https://github.com/streambed/streambed-rs.git", rev = "d343171f7ec85cc028674115c8df30150b741ef6" }
+streambed-storage = { git = "https://github.com/streambed/streambed-rs.git", rev = "d343171f7ec85cc028674115c8df30150b741ef6" }
 test-log = "0.2.11"
 tokio = "1.23.0"
 tokio-stream = "0.1.14"
