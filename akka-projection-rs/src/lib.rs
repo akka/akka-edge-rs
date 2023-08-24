@@ -60,6 +60,6 @@ pub trait SourceProvider {
         offset: F,
     ) -> Pin<Box<dyn Stream<Item = Self::Envelope> + Send + 'async_trait>>
     where
-        F: FnOnce() -> FR + Send,
+        F: Fn() -> FR + Send + Sync,
         FR: Future<Output = Option<Offset>> + Send;
 }

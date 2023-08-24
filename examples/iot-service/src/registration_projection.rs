@@ -1,7 +1,7 @@
 //! Handle registration projection concerns
 //!
 
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use akka_persistence_rs::{EntityType, Message};
 use akka_persistence_rs_commitlog::EventEnvelope;
@@ -52,27 +52,17 @@ pub async fn task(
     state_storage_path: PathBuf,
     temperature_sender: mpsc::Sender<Message<temperature::Command>>,
 ) {
-    let events_key_secret_path: Arc<str> = Arc::from(events_key_secret_path);
-
-    // When it comes to having a projection sourced from a local
-    // commit log, there's little benefit if having many of them.
-    // We therefore manage all slices from just one projection.
-    let slice_ranges = akka_persistence_rs::slice_ranges(1);
-
-    // A closure to establish our source of events as a commit log.
-    let source_provider = |slice| {
-        Some(CommitLogSourceProvider::new(
-            commit_log.clone(),
-            EventEnvelopeMarshaler {
-                events_key_secret_path: events_key_secret_path.clone(),
-                secret_store: secret_store.clone(),
-            },
-            slice_ranges.get(slice as usize).cloned()?,
-            "iot-service-projection",
-            Topic::from(registration::EVENTS_TOPIC),
-            EntityType::from(registration::EVENTS_TOPIC),
-        ))
-    };
+    // Establish our source of events as a commit log.
+    let source_provider = CommitLogSourceProvider::new(
+        commit_log,
+        EventEnvelopeMarshaler {
+            events_key_secret_path: Arc::from(events_key_secret_path),
+            secret_store: secret_store.clone(),
+        },
+        "iot-service-projection",
+        Topic::from(registration::EVENTS_TOPIC),
+        EntityType::from(registration::EVENTS_TOPIC),
+    );
 
     // Declare a handler to forward projection events on to the temperature entity.
     let handler = RegistrationHandler { temperature_sender };
@@ -87,6 +77,7 @@ pub async fn task(
         receiver,
         source_provider,
         handler,
+        Duration::from_millis(100),
     )
     .await
 }
