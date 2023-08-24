@@ -31,10 +31,32 @@ where
     pub fn new(
         commit_log: CL,
         marshaler: M,
-        slice_range: Range<u32>,
         consumer_group_name: &str,
         topic: Topic,
         entity_type: EntityType,
+    ) -> Self {
+        // When it comes to having a projection sourced from a local
+        // commit log, there's little benefit if having many of them.
+        // We therefore manage all slices from just one projection.
+        let slice_ranges = akka_persistence_rs::slice_ranges(1);
+
+        Self::with_slice_range(
+            commit_log,
+            marshaler,
+            consumer_group_name,
+            topic,
+            entity_type,
+            slice_ranges.get(0).cloned().unwrap(),
+        )
+    }
+
+    pub fn with_slice_range(
+        commit_log: CL,
+        marshaler: M,
+        consumer_group_name: &str,
+        topic: Topic,
+        entity_type: EntityType,
+        slice_range: Range<u32>,
     ) -> Self {
         Self {
             commit_log,
@@ -107,7 +129,7 @@ where
         offset: F,
     ) -> Pin<Box<dyn Stream<Item = Self::Envelope> + Send + 'async_trait>>
     where
-        F: FnOnce() -> FR + Send,
+        F: Fn() -> FR + Send + Sync,
         FR: Future<Output = Option<Offset>> + Send,
     {
         let offset = offset().await;

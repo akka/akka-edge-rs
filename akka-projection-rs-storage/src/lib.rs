@@ -1,13 +1,13 @@
 #![doc = include_str!("../README.md")]
 
-use std::path::Path;
+use std::{path::Path, time::Duration};
 
 use akka_persistence_rs::{Offset, WithOffset};
 use akka_projection_rs::{Handler, SourceProvider};
 use log::error;
 use serde::{Deserialize, Serialize};
 use streambed::{commit_log::Offset as CommitLogOffset, secret_store::SecretStore};
-use tokio::sync::mpsc::Receiver;
+use tokio::{sync::mpsc::Receiver, time};
 use tokio_stream::StreamExt;
 
 /// The commands that a projection task is receptive to.
@@ -20,75 +20,87 @@ struct StorableState {
     last_offset: Option<CommitLogOffset>,
 }
 
-/// Provides local file system based storage for projection offsets.
-pub async fn run<E, FSP, H, SP>(
+/// Provides at-least-once local file system based storage for projection offsets,
+/// meaning, for multiple runs of a projection, it is possible for events to repeat
+/// from previous runs.
+///
+/// The `min_save_offset_interval` declares the minimum time between
+/// having successfully handled an event by the handler to saving
+/// the offset to storage. Therefore, high bursts of events are not
+/// slowed down by having to persist an offset to storage. This strategy
+/// works given the at-least-once semantics.
+pub async fn run<E, H, SP>(
     secret_store: &impl SecretStore,
     secret_path: &str,
     state_storage_path: &Path,
     mut receiver: Receiver<Command>,
-    mut source_provider: FSP,
+    source_provider: SP,
     handler: H,
+    min_save_offset_interval: Duration,
 ) where
     E: WithOffset,
     H: Handler<Envelope = E>,
-    FSP: FnMut(u32) -> Option<SP>,
     SP: SourceProvider<Envelope = E>,
 {
-    // For now, we're going to produce a source provider for just one slice.
-    // When we implement the gRPC consumer, we will likely have to do more.
-
-    if let Some(source_provider) = source_provider(0) {
-        let mut source = source_provider
-            .source(|| async {
-                streambed_storage::load_struct(
-                    state_storage_path,
-                    secret_store,
-                    secret_path,
-                    |bytes| ciborium::de::from_reader::<StorableState, _>(bytes),
-                )
-                .await
-                .ok()
-                .and_then(|s| s.last_offset.map(Offset::Sequence))
+    let mut source = source_provider
+        .source(|| async {
+            streambed_storage::load_struct(state_storage_path, secret_store, secret_path, |bytes| {
+                ciborium::de::from_reader::<StorableState, _>(bytes)
             })
-            .await;
+            .await
+            .ok()
+            .and_then(|s| s.last_offset.map(Offset::Sequence))
+        })
+        .await;
 
-        let serializer = |state: &StorableState| {
-            let mut buf = Vec::new();
-            ciborium::ser::into_writer(state, &mut buf).map(|_| buf)
-        };
+    let serializer = |state: &StorableState| {
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(state, &mut buf).map(|_| buf)
+    };
 
-        loop {
-            tokio::select! {
-                envelope = source.next() => {
-                    if let Some(envelope) = envelope {
-                        let Offset::Sequence(offset) = envelope.offset();
-                        if  handler.process(envelope).await.is_ok() {
-                            // FIXME: Make this a periodic task
-                            let storable_state = StorableState {
-                                last_offset: Some(offset)
-                            };
-                            if streambed_storage::save_struct(
-                                state_storage_path,
-                                secret_store,
-                                secret_path,
-                                serializer,
-                                rand::thread_rng,
-                                &storable_state
-                            ).await.is_err() {
-                                error!("Cannot persist offsets");
-                            }
-                        }
+    let mut next_save_offset_interval = Duration::MAX;
+    let mut last_offset = None;
+
+    loop {
+        tokio::select! {
+            envelope = source.next() => {
+                if let Some(envelope) = envelope {
+                    let Offset::Sequence(offset) = envelope.offset();
+                    if  handler.process(envelope).await.is_ok() {
+                        next_save_offset_interval = min_save_offset_interval;
+                        last_offset = Some(offset);
                     }
                 }
-                _ = receiver.recv() => {
-                    break;
-                }
-                else => {
-                    break;
+            }
+
+            _ = time::sleep(next_save_offset_interval) => {
+                if last_offset.is_some() {
+                    let storable_state = StorableState {
+                        last_offset
+                    };
+                    if streambed_storage::save_struct(
+                        state_storage_path,
+                        secret_store,
+                        secret_path,
+                        serializer,
+                        rand::thread_rng,
+                        &storable_state
+                    ).await.is_err() {
+                        error!("Cannot persist offsets");
+                    }
+
+                    next_save_offset_interval = Duration::MAX;
+                    last_offset = None;
                 }
             }
+
+            _ = receiver.recv() => {
+                break;
+            }
+
+            else => {
+                break;
+            }
         }
-    } else {
-        error!("Cannot obtain a source provider. Exiting the projection runner.");
     }
 }
