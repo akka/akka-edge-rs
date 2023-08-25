@@ -34,8 +34,8 @@ pub async fn run<E, H, SP>(
     secret_path: &str,
     state_storage_path: &Path,
     mut receiver: Receiver<Command>,
-    source_provider: SP,
-    handler: H,
+    mut source_provider: SP,
+    mut handler: H,
     min_save_offset_interval: Duration,
 ) where
     E: WithOffset,
@@ -214,7 +214,7 @@ mod tests {
         type Envelope = EventEnvelope<MyEvent>;
 
         async fn source<F, FR>(
-            &self,
+            &mut self,
             offset: F,
         ) -> Pin<Box<dyn Stream<Item = Self::Envelope> + Send + 'async_trait>>
         where
@@ -240,7 +240,7 @@ mod tests {
         type Envelope = EventEnvelope<MyEvent>;
 
         /// Process an envelope.
-        async fn process(&self, envelope: Self::Envelope) -> Result<(), HandlerError> {
+        async fn process(&mut self, envelope: Self::Envelope) -> Result<(), HandlerError> {
             assert_eq!(
                 envelope,
                 EventEnvelope {

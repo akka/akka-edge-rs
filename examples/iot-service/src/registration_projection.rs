@@ -29,7 +29,7 @@ pub struct RegistrationHandler {
 impl Handler for RegistrationHandler {
     type Envelope = EventEnvelope<registration::Event>;
 
-    async fn process(&self, envelope: Self::Envelope) -> Result<(), HandlerError> {
+    async fn process(&mut self, envelope: Self::Envelope) -> Result<(), HandlerError> {
         let registration::Event::Registered { secret } = envelope.event;
         self.temperature_sender
             .send(Message::new(

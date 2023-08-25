@@ -25,7 +25,7 @@ pub fn routes(
                         return warp::reply::with_status(
                             warp::reply::json(&"Invalid id - must be a number"),
                             StatusCode::BAD_REQUEST,
-                        )
+                        );
                     };
 
                     let (reply_to, reply) = oneshot::channel();
@@ -34,18 +34,19 @@ pub fn routes(
                             id.to_string(),
                             temperature::Command::Get { reply_to },
                         ))
-                        .await else {
+                        .await
+                    else {
                         return warp::reply::with_status(
                             warp::reply::json(&"Service unavailable"),
                             StatusCode::SERVICE_UNAVAILABLE,
-                        )
-                     };
+                        );
+                    };
                     let Ok(events) = reply.await else {
                         return warp::reply::with_status(
                             warp::reply::json(&"Id not found"),
                             StatusCode::NOT_FOUND,
-                        )
-                     };
+                        );
+                    };
 
                     warp::reply::with_status(warp::reply::json(&events), StatusCode::OK)
                 }
@@ -66,14 +67,17 @@ pub fn routes(
                     let Ok(_) = task_registration_command_command
                         .send(Message::new(
                             id,
-                            registration::Command::Register { secret: SecretDataValue::from(hex::encode(key)) },
+                            registration::Command::Register {
+                                secret: SecretDataValue::from(hex::encode(key)),
+                            },
                         ))
-                        .await else {
+                        .await
+                    else {
                         return warp::reply::with_status(
                             warp::reply::json(&"Service unavailable"),
                             StatusCode::SERVICE_UNAVAILABLE,
-                        )
-                     };
+                        );
+                    };
 
                     warp::reply::with_status(warp::reply::json(&"Secret submitted"), StatusCode::OK)
                 }

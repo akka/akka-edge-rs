@@ -18,7 +18,7 @@ pub trait Handler {
     type Envelope;
 
     /// Process an envelope.
-    async fn process(&self, envelope: Self::Envelope) -> Result<(), HandlerError>;
+    async fn process(&mut self, envelope: Self::Envelope) -> Result<(), HandlerError>;
 }
 
 /// Errors for event processing by a handler.
@@ -56,7 +56,7 @@ pub trait SourceProvider {
 
     /// Given a closure that returns an offset, source envelopes.
     async fn source<F, FR>(
-        &self,
+        &mut self,
         offset: F,
     ) -> Pin<Box<dyn Stream<Item = Self::Envelope> + Send + 'async_trait>>
     where
