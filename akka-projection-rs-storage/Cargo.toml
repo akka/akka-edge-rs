@@ -19,7 +19,12 @@ akka-projection-rs = { path = "../akka-projection-rs" }
 
 [dev-dependencies]
 async-stream = { workspace = true }
+criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 env_logger = { workspace = true }
 test-log = { workspace = true }
 
 akka-persistence-rs-commitlog = { path = "../akka-persistence-rs-commitlog" }
+
+[[bench]]
+name = "benches"
+harness = false

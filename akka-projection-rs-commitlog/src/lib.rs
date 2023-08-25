@@ -125,7 +125,7 @@ where
     type Envelope = EventEnvelope<E>;
 
     async fn source<F, FR>(
-        &self,
+        &mut self,
         offset: F,
     ) -> Pin<Box<dyn Stream<Item = Self::Envelope> + Send + 'async_trait>>
     where
@@ -313,7 +313,7 @@ mod tests {
 
         // Source that event just produced.
 
-        let source_provider = CommitLogSourceProvider::new(
+        let mut source_provider = CommitLogSourceProvider::new(
             commit_log.clone(),
             MyEventMarshaler,
             "some-consumer",

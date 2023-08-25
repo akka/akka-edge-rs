@@ -14,12 +14,12 @@ pub struct GrpcSourceProvider<E> {
 #[async_trait]
 impl<E> SourceProvider for GrpcSourceProvider<E>
 where
-    E: Sync,
+    E: Send + Sync,
 {
     type Envelope = EventEnvelope<E>;
 
     async fn source<F, FR>(
-        &self,
+        &mut self,
         _offset: F,
     ) -> Pin<Box<dyn Stream<Item = Self::Envelope> + Send + 'async_trait>>
     where
