@@ -6,7 +6,7 @@ use akka_persistence_rs::{Offset, WithOffset};
 use akka_projection_rs::{Handler, SourceProvider};
 use log::error;
 use serde::{Deserialize, Serialize};
-use streambed::{commit_log::Offset as CommitLogOffset, secret_store::SecretStore};
+use streambed::secret_store::SecretStore;
 use tokio::{sync::mpsc::Receiver, time};
 use tokio_stream::StreamExt;
 
@@ -17,7 +17,7 @@ pub enum Command {
 
 #[derive(Default, Deserialize, Serialize)]
 struct StorableState {
-    last_offset: Option<CommitLogOffset>,
+    last_offset: Option<Offset>,
 }
 
 /// Provides at-least-once local file system based storage for projection offsets,
@@ -53,7 +53,7 @@ pub async fn run<E, H, SP>(
                 )
                 .await
                 .ok()
-                .and_then(|s| s.last_offset.map(Offset::Sequence))
+                .and_then(|s| s.last_offset)
             })
             .await;
 
@@ -69,10 +69,12 @@ pub async fn run<E, H, SP>(
             tokio::select! {
                 envelope = source.next() => {
                     if let Some(envelope) = envelope {
-                        let Offset::Sequence(offset) = envelope.offset();
+                        let offset = envelope.offset();
                         if  handler.process(envelope).await.is_ok() {
                             next_save_offset_interval = min_save_offset_interval;
                             last_offset = Some(offset);
+                        } else {
+                            break;
                         }
                     } else {
                         break;

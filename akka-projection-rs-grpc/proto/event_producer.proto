@@ -1,0 +1,272 @@
+// Copyright 2022 Lightbend Inc.
+
+syntax = "proto3";
+
+package akka.projection.grpc;
+
+import "google/protobuf/any.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+option java_package = "akka.projection.grpc.internal.proto";
+
+// EventProducerService runs on the producer side and implements the
+// producer side of the EventsBySlices query, which can be used with
+// Akka Projection over gRPC.
+//
+// 1. Events are stored in the event journal on the producer side.
+// 2. Consumer side starts an Akka Projection which locally reads its offset
+//    from the Projection offset store.
+// 3. Consumer side establishes a replication stream from the producer service
+//    by sending the `InitReq` with the offset to start from.
+// 4. Events are read from the journal on the producer side and emitted to the
+//    replication stream.
+// 5. Consumer side processes the events in a Projection handler.
+// 6. Offset is stored on the consumer side by the Projection offset store.
+// 7. Producer continues to read new events from the journal and emit to the stream.
+//
+// The consumer can define event filters with the `FilterCriteria`, which can be included
+// in the `InitReq` and also changed in runtime by sending `FilterReq`.
+service EventProducerService {
+  rpc EventsBySlices(stream StreamIn) returns (stream StreamOut);
+
+  // Used in some edge cases by the offset store to retrieve the timestamp for
+  // a certain event.
+  rpc EventTimestamp(EventTimestampRequest) returns (EventTimestampResponse);
+
+  // Lazy loading of a specific event.
+  rpc LoadEvent(LoadEventRequest) returns (LoadEventResponse);
+}
+
+message StreamIn {
+  oneof message {
+    // Consumer side establishes a replication stream from the producer service
+    // by sending the `InitReq` with the offset and `FilterCriteria` to start from.
+    InitReq init = 1;
+    // Consumer defined event filters can be changed in runtime by sending `FilterReq`.
+    FilterReq filter = 2;
+    // If the consumer detects a missing sequence number it can request a replay of
+    // events for a specific entity.
+    ReplayReq replay = 3;
+  }
+}
+
+// The first message must always be this InitReq to setup the stream.
+// It can only be used as the first message.
+message InitReq {
+  // the logical stream identifier, mapped to a specific internal entity type by
+  // the producer settings
+  string stream_id = 1;
+  // entities are partitioned by a deterministic slice (0-1023),
+  // a consumer would handle a slice range from slice_min to slice_max
+  int32 slice_min = 2;
+  int32 slice_max = 3;
+  // start from this offset
+  Offset offset = 4;
+  // consumer defined event filters
+  repeated FilterCriteria filter = 5;
+}
+
+// Add filter criteria to exclude and include events for matching entities.
+message FilterReq {
+  repeated FilterCriteria criteria = 1;
+}
+
+// Replay events for given entities.
+message ReplayReq {
+  repeated PersistenceIdSeqNr persistence_id_offset = 1;
+}
+
+message FilterCriteria {
+  // Exclude criteria are evaluated first.
+  // If no matching exclude criteria the event is emitted.
+  // If an exclude criteria is matching the include criteria are evaluated.
+  //   If no matching include criteria the event is discarded.
+  //   If matching include criteria the event is emitted.
+  oneof message {
+    ExcludeTags exclude_tags = 1;
+    RemoveExcludeTags remove_exclude_tags = 2;
+    IncludeTags include_tags = 3;
+    RemoveIncludeTags remove_include_tags = 4;
+    ExcludeRegexEntityIds exclude_matching_entity_ids = 5;
+    RemoveExcludeRegexEntityIds remove_exclude_matching_entity_ids = 6;
+    IncludeRegexEntityIds include_matching_entity_ids = 7;
+    RemoveIncludeRegexEntityIds remove_include_matching_entity_ids = 8;
+    ExcludeEntityIds exclude_entity_ids = 9;
+    RemoveExcludeEntityIds remove_exclude_entity_ids = 10;
+    IncludeEntityIds include_entity_ids = 11;
+    RemoveIncludeEntityIds remove_include_entity_ids = 12;
+    IncludeTopics include_topics = 13;
+    RemoveIncludeTopics remove_include_topics = 14;
+  }
+}
+
+// Exclude events with any of the given tags, unless there is a
+// matching include filter that overrides the exclude.
+message ExcludeTags {
+  repeated string tags = 1;
+}
+
+// Remove a previously added `ExcludeTags`.
+message RemoveExcludeTags {
+  repeated string tags = 1;
+}
+
+// Include events with any of the given tags. A matching include overrides
+// a matching exclude.
+message IncludeTags {
+  repeated string tags = 1;
+}
+
+// Remove a previously added `IncludeTags`.
+message RemoveIncludeTags {
+  repeated string tags = 1;
+}
+
+// Include events for entities with the given entity ids. A matching include overrides
+// a matching exclude.
+//
+// For the given entity ids a `seq_nr` can be defined to replay all events for the entity
+// from the sequence number (inclusive). If `seq_nr` is 0 events will not be replayed.
+message IncludeEntityIds {
+  repeated EntityIdOffset entity_id_offset = 1;
+}
+
+message EntityIdOffset {
+  string entity_id = 1;
+  // If this is defined (> 0) events are replayed from the given
+  // sequence number (inclusive).
+  int64 seq_nr = 2;
+}
+
+// Remove a previously added `IncludeEntityIds`.
+message RemoveIncludeEntityIds {
+  repeated string entity_ids = 1;
+}
+
+// Exclude events for entities with the given entity ids,
+// unless there is a matching include filter that overrides the exclude.
+message ExcludeEntityIds {
+  repeated string entity_ids = 1;
+}
+
+// Remove a previously added `ExcludeEntityIds`.
+message RemoveExcludeEntityIds {
+  repeated string entity_ids = 1;
+}
+
+// Exclude events for entities with entity ids matching the given regular expressions,
+// unless there is a matching include filter that overrides the exclude.
+message ExcludeRegexEntityIds {
+  repeated string matching = 1;
+}
+
+// Remove a previously added `ExcludeRegexEntityIds`.
+message RemoveExcludeRegexEntityIds {
+  repeated string matching = 1;
+}
+
+// Include events for entities with entity ids matching the given regular expressions.
+// A matching include overrides a matching exclude.
+message IncludeRegexEntityIds {
+  repeated string matching = 1;
+}
+
+// Remove a previously added `IncludeRegexEntityIds`.
+message RemoveIncludeRegexEntityIds {
+  repeated string matching = 1;
+}
+
+// Include events with any of the given matching topics. A matching include overrides
+// a matching exclude.
+message IncludeTopics {
+  // topic match expression according to MQTT specification, including wildcards
+  repeated string expression = 1;
+}
+
+// Remove a previously added `IncludeTopics`.
+message RemoveIncludeTopics {
+  repeated string expression = 1;
+}
+
+message Offset {
+  google.protobuf.Timestamp timestamp = 1;
+  // events with these sequence numbers for this timestamp have already been
+  // processed and doesn't have to be emitted again
+  repeated PersistenceIdSeqNr seen = 2;
+}
+
+message PersistenceIdSeqNr {
+  string persistence_id = 1;
+  int64 seq_nr = 2;
+}
+
+
+message StreamOut {
+  oneof message {
+    Event event = 1;
+    FilteredEvent filtered_event = 2;
+  }
+}
+
+message Event {
+  string persistence_id = 1;
+  int64 seq_nr = 2;
+  int32 slice = 3;
+  Offset offset = 4;
+  // The event payload may be serialized as Protobuf message when the type_url
+  // prefix is `type.googleapis.com/` or with Akka serialization when the type_url
+  // prefix `ser.akka.io/`. For Akka serialization, the serializer id and manifest
+  // are encoded into a custom type_url schema.
+  // Note that the payload is empty for backtracking events, see `source`.
+  google.protobuf.Any payload = 5;
+  // "" for ordinary events.
+  // "BT" for backtracking events.
+  // "PS" for PubSub events.
+  string source = 6;
+  google.protobuf.Any metadata = 7;
+  repeated string tags = 8;
+}
+
+
+// Events that are filtered out are represented by this
+// placeholder to be able to track sequence numbers without holes.
+message FilteredEvent {
+  string persistence_id = 1;
+  int64 seq_nr = 2;
+  int32 slice = 3;
+  Offset offset = 4;
+  string source = 5;
+}
+
+// Retrieve the timestamp of a specific event.
+message EventTimestampRequest {
+  string stream_id = 1;
+  string persistence_id = 2;
+  int64 seq_nr = 3;
+}
+
+// Response to `EventTimestampRequest`.
+message EventTimestampResponse {
+  google.protobuf.Timestamp timestamp = 1;
+}
+
+// Lazy loading of a specific event. Used when payload for a backtracking event
+// is needed.
+message LoadEventRequest {
+  // the logical stream identifier, mapped to a specific internal entity type by
+  // the producer settings
+  string stream_id = 1;
+  string persistence_id = 2;
+  int64 seq_nr = 3;
+}
+
+// Response to `LoadEventRequest`.
+message LoadEventResponse {
+  oneof message {
+    Event event = 1;
+    FilteredEvent filtered_event = 2;
+  }
+}
+
+

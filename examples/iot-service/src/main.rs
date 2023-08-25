@@ -1,19 +1,24 @@
-use std::{collections::HashMap, error::Error, net::SocketAddr};
+mod http_server;
+#[cfg(feature = "local")]
+mod registration;
+mod registration_projection;
+#[cfg(feature = "grpc")]
+mod registration_proto;
+mod temperature;
+mod udp_server;
 
 use clap::Parser;
 use git_version::git_version;
 use log::info;
 use rand::RngCore;
+#[cfg(feature = "grpc")]
+use registration_proto as registration;
+use std::{collections::HashMap, error::Error, net::SocketAddr};
 use streambed::secret_store::{SecretData, SecretStore};
 use streambed_confidant::{args::SsArgs, FileSecretStore};
 use streambed_logged::{args::CommitLogArgs, FileLog};
 use tokio::{net::UdpSocket, sync::mpsc};
-
-mod http_server;
-mod registration;
-mod registration_projection;
-mod temperature;
-mod udp_server;
+use tonic::transport::Uri;
 
 /// This service receives IoT data re. temperature, stores it in the
 /// commit log keyed by its sensor id, and provides an HTTP interface
@@ -24,6 +29,12 @@ struct Args {
     /// Logged commit log args
     #[clap(flatten)]
     cl_args: CommitLogArgs,
+
+    /// A socket address for connecting to a GRPC event producing
+    /// service for registrations. Only relevant when building the
+    /// example with the "grpc" feature.
+    #[clap(env, long, default_value = "http://127.0.0.1:8101")]
+    event_producer_addr: Uri,
 
     /// A socket address for serving our HTTP web service requests.
     #[clap(env, long, default_value = "127.0.0.1:8080")]
@@ -39,7 +50,9 @@ struct Args {
     udp_addr: SocketAddr,
 }
 
+#[cfg(feature = "local")]
 const MAX_REGISTRATION_MANAGER_COMMANDS: usize = 10;
+
 const MAX_REGISTRATION_PROJECTION_MANAGER_COMMANDS: usize = 1;
 const MAX_TEMPERATURE_MANAGER_COMMANDS: usize = 10;
 
@@ -98,6 +111,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         mpsc::channel(MAX_TEMPERATURE_MANAGER_COMMANDS);
 
     // Establish channels for the registrations
+    #[cfg(feature = "local")]
     let (registration_command, registration_command_receiver) =
         mpsc::channel(MAX_REGISTRATION_MANAGER_COMMANDS);
 
@@ -106,7 +120,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         mpsc::channel(MAX_REGISTRATION_PROJECTION_MANAGER_COMMANDS);
 
     // Start up the http service
-    let routes = http_server::routes(registration_command, temperature_command.clone());
+    let routes = http_server::routes(
+        #[cfg(feature = "local")]
+        registration_command,
+        temperature_command.clone(),
+    );
     tokio::spawn(warp::serve(routes).run(args.http_addr));
     info!("HTTP listening on {}", args.http_addr);
 
@@ -116,6 +134,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!("UDP listening on {}", args.udp_addr);
 
     // Start up a task to manage registrations
+    #[cfg(feature = "local")]
     tokio::spawn(registration::task(
         cl.clone(),
         ss.clone(),
@@ -125,8 +144,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Start up a task to manage registration projections
     tokio::spawn(registration_projection::task(
+        #[cfg(feature = "local")]
         cl.clone(),
+        #[cfg(feature = "grpc")]
+        args.event_producer_addr,
         ss.clone(),
+        #[cfg(feature = "local")]
         temperature_events_key_secret_path.clone(),
         registration_offset_key_secret_path.clone(),
         registration_projection_command_receiver,

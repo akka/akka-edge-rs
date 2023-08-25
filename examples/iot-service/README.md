@@ -11,7 +11,7 @@ The service is a complete example and includes encryption. Encryption should nor
 at rest (persisted by the commit log) and in flight (http and UDP). For simplicity, we apply encryption
 to the commit log data, but not http and UDP.
 
-Running
+Running locally
 ---
 
 To run via cargo, first `cd` into this directory and then:
@@ -111,3 +111,26 @@ real-time scenarios, waiting on confirmation that an event is written may be
 undesirable. However, with the correct dimensioning of the commit log in terms of
 its buffers and how the compaction strategies are composed, compaction back-pressure
 can also be avoided.
+
+Running with gRPC
+---
+
+The example may also be run with the registration projection connecting over a gRPC 
+connection to a Akka-JVM based remote service. The source code and instructions for
+running the remote service can be found at:
+
+https://github.com/akka/akka-projection/tree/main/samples/grpc/iot-service-scala
+
+Please start the remote service first, and then run the local service with a slightly
+different configuration of features:
+
+```
+mkdir -p /tmp/iot-service/var/lib/confidant
+chmod 700 /tmp/iot-service/var/lib/confidant
+mkdir -p /tmp/iot-service/var/lib/logged
+echo -n "01234567890123456789012345678912some-secret-id" | \
+RUST_LOG=debug cargo run --no-default-features --features="grpc" -- \
+  --cl-root-path=/tmp/iot-service/var/lib/logged \
+  --ss-role-id="iot-service" \
+  --ss-root-path=/tmp/iot-service/var/lib/confidant
+```

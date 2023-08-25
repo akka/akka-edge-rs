@@ -1,4 +1,4 @@
-akka-projection-rs-commitlog
+akka-projection-rs-grpc
 ===
 
-Uses [streambed](https://github.com/streambed/streambed-rs)'s `CommitLog` to persist projection offsets.
+Sources events over a gRPC connection, using [the Akka GRPC protocol](https://github.com/akka/akka-projection/blob/main/akka-projection-grpc/src/main/protobuf/akka/projection/grpc/event_producer.proto).
