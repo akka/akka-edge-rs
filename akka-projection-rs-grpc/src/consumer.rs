@@ -130,17 +130,15 @@ where
                 let mut stream_outs = response.into_inner();
                 Box::pin(stream! {
                     while let Some(Ok(StreamOut{ message: Some(stream_out::Message::Event(streamed_event)) })) = stream_outs.next().await {
-                        // FIXME I'm unsure what the behaviour should be here in terms of not being able to parse
-                        // an event correctly. In general, we bail if there's a problem. Bailing will cause the
-                        // connection to restart immediately. An exception here is that if the payload is None then
-                        // we ignore the packet. I've no idea why payloads can be empty - heartbeats?
+                        let Some(payload) = streamed_event.payload else { continue };
+
                         let Ok(persistence_id) = streamed_event.persistence_id.parse::<PersistenceId>() else { break };
                         let Some(offset) = streamed_event.offset else { break };
                         let Some(timestamp) = offset.timestamp else { break };
                         let Some(timestamp) = NaiveDateTime::from_timestamp_opt(timestamp.seconds, timestamp.nanos as u32) else { break };
                         let timestamp = DateTime::from_utc(timestamp, Utc);
                         let seen = offset.seen.iter().flat_map(|pis| pis.persistence_id.parse().ok().map(|pid|(pid, pis.seq_nr as u64))).collect();
-                        let Some(payload) = streamed_event.payload else { continue };
+
                         if !payload.type_url.starts_with("type.googleapis.com/") {
                             break
                         }
