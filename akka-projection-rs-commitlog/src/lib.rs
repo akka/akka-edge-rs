@@ -38,7 +38,7 @@ where
         // When it comes to having a projection sourced from a local
         // commit log, there's little benefit if having many of them.
         // We therefore manage all slices from just one projection.
-        let slice_ranges = akka_persistence_rs::slice_ranges(1);
+        let slice_range = akka_persistence_rs::slice_ranges(1);
 
         Self::with_slice_range(
             commit_log,
@@ -46,7 +46,7 @@ where
             consumer_group_name,
             topic,
             entity_type,
-            slice_ranges.get(0).cloned().unwrap(),
+            slice_range.get(0).cloned().unwrap(),
         )
     }
 

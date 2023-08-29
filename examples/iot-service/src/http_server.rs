@@ -1,17 +1,17 @@
 //! Handle http serving concerns
 //!
-use crate::{
-    registration::{self, SecretDataValue},
-    temperature,
-};
+#[cfg(feature = "local")]
+use crate::registration::{self, SecretDataValue};
+use crate::temperature;
 use akka_persistence_rs::Message;
+#[cfg(feature = "local")]
 use rand::RngCore;
 use tokio::sync::{mpsc, oneshot};
 use warp::{hyper::StatusCode, Filter, Rejection, Reply};
 
 /// Declares routes to serve our HTTP interface.
 pub fn routes(
-    registration_command: mpsc::Sender<Message<registration::Command>>,
+    #[cfg(feature = "local")] registration_command: mpsc::Sender<Message<registration::Command>>,
     temperature_command: mpsc::Sender<Message<temperature::Command>>,
 ) -> impl Filter<Extract = (impl Reply,), Error = Rejection> + Clone {
     let get_temperature_route = {
@@ -53,6 +53,7 @@ pub fn routes(
             })
     };
 
+    #[cfg(feature = "local")]
     let post_registration_route = {
         warp::post()
             .and(warp::path::end())
@@ -84,6 +85,11 @@ pub fn routes(
             })
     };
 
-    warp::path("api")
-        .and(warp::path("temperature").and(get_temperature_route.or(post_registration_route)))
+    #[cfg(feature = "local")]
+    let routes = get_temperature_route.or(post_registration_route);
+
+    #[cfg(feature = "grpc")]
+    let routes = get_temperature_route;
+
+    warp::path("api").and(warp::path("temperature").and(routes))
 }

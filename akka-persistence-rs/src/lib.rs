@@ -4,7 +4,11 @@ use std::{
     fmt::{self, Display, Write},
     num::Wrapping,
     ops::Range,
+    str::FromStr,
 };
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 pub mod effect;
 pub mod entity;
@@ -54,6 +58,7 @@ fn jdk_string_hashcode(s: &str) -> i32 {
 }
 
 /// A namespaced entity id given an entity type.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 pub struct PersistenceId {
     pub entity_type: EntityType,
     pub entity_id: EntityId,
@@ -80,6 +85,28 @@ impl Display for PersistenceId {
     }
 }
 
+#[derive(Debug)]
+pub struct PersistenceIdParseError;
+
+impl FromStr for PersistenceId {
+    type Err = PersistenceIdParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let persistence_id = if let Some((entity_type, entity_id)) = s.split_once('|') {
+            PersistenceId {
+                entity_type: EntityType::from(entity_type),
+                entity_id: EntityId::from(entity_id),
+            }
+        } else {
+            PersistenceId {
+                entity_type: EntityType::from(""),
+                entity_id: EntityId::from(s),
+            }
+        };
+        Ok(persistence_id)
+    }
+}
+
 /// A message encapsulates a command that is addressed to a specific entity.
 #[derive(Debug, PartialEq)]
 pub struct Message<C> {
@@ -99,6 +126,7 @@ impl<C> Message<C> {
     }
 }
 
+#[derive(Deserialize, Serialize)]
 pub enum Offset {
     /// Corresponds to an ordered sequence number for the events. Note that the corresponding
     /// offset of each event is provided in an Envelope,
@@ -109,6 +137,13 @@ pub enum Offset {
     /// as the `offset` parameter in a subsequent query.
     ///
     Sequence(u64),
+    /// Timestamp based offset. Since there can be several events for the same timestamp it keeps
+    /// track of what sequence numbers for every persistence id that have been seen at this specific timestamp.
+    ///
+    /// The `offset` is exclusive, i.e. the event with the exact same sequence number will not be included
+    /// in the returned stream. This means that you can use the offset that is returned in `EventEnvelope`
+    /// as the `offset` parameter in a subsequent query.
+    Timestamp(DateTime<Utc>, Vec<(PersistenceId, u64)>),
 }
 
 /// Implemented by structures that can return an offset.
@@ -136,6 +171,19 @@ mod tests {
             )
             .slice(),
             451
+        );
+    }
+
+    #[test]
+    fn test_parse_for_persistence_id() {
+        assert_eq!(
+            "some-entity-type|some-entity-id"
+                .parse::<PersistenceId>()
+                .unwrap(),
+            PersistenceId::new(
+                EntityType::from("some-entity-type"),
+                EntityId::from("some-entity-id")
+            )
         );
     }
 

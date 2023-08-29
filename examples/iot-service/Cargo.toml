@@ -17,6 +17,7 @@ log = { workspace = true }
 postcard = { workspace = true, default-features = false, features = [
     "use-std",
 ] }
+prost = { workspace = true }
 rand = { workspace = true }
 scopeguard = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -27,6 +28,7 @@ streambed-logged = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }
+tonic = { workspace = true }
 warp = { workspace = true }
 
 akka-persistence-rs = { path = "../../akka-persistence-rs" }
@@ -34,9 +36,22 @@ akka-persistence-rs-commitlog = { path = "../../akka-persistence-rs-commitlog", 
     "cbor",
 ] }
 akka-projection-rs = { path = "../../akka-projection-rs" }
-akka-projection-rs-commitlog = { path = "../../akka-projection-rs-commitlog" }
+akka-projection-rs-commitlog = { path = "../../akka-projection-rs-commitlog", optional = true }
+akka-projection-rs-grpc = { path = "../../akka-projection-rs-grpc", optional = true }
 akka-projection-rs-storage = { path = "../../akka-projection-rs-storage" }
 
 [dev-dependencies]
 env_logger = { workspace = true }
 test-log = { workspace = true }
+
+[build-dependencies]
+prost-build = { workspace = true }
+
+[features]
+default = ["local"]
+
+# Stand the example up with a local source of projections
+local = ["dep:akka-projection-rs-commitlog"]
+
+# Stand the example up with a remote source of projections using gRPC
+grpc = ["dep:akka-projection-rs-grpc"]

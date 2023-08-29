@@ -4,8 +4,24 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+async-stream = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+exponential-backoff = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+smol_str = { workspace = true }
+tokio = { workspace = true }
 tokio-stream = { workspace = true }
+tonic = { workspace = true }
 
 akka-persistence-rs = { path = "../akka-persistence-rs" }
 akka-projection-rs = { path = "../akka-projection-rs" }
+
+[dev-dependencies]
+env_logger = { workspace = true }
+test-log = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }

@@ -8,7 +8,7 @@ async-trait = { workspace = true }
 ciborium = { workspace = true }
 log = { workspace = true }
 rand = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 streambed = { workspace = true }
 streambed-storage = { workspace = true }
 tokio = { workspace = true }
