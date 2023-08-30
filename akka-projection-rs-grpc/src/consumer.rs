@@ -16,15 +16,9 @@ use tokio_stream::StreamExt;
 use tonic::{transport::Uri, Request};
 
 use crate::delayer::Delayer;
-use crate::event_producer::StreamOut;
+use crate::proto;
+use crate::EventEnvelope;
 use crate::StreamId;
-use crate::{
-    event_producer::{
-        event_producer_service_client::EventProducerServiceClient, stream_in, stream_out, InitReq,
-        Offset as EventProducerOffset, PersistenceIdSeqNr, StreamIn,
-    },
-    EventEnvelope,
-};
 
 pub struct GrpcSourceProvider<E> {
     delayer: Option<Delayer>,
@@ -76,7 +70,10 @@ where
         FR: Future<Output = Option<Offset>> + Send,
     {
         let connection = if let Ok(connection) =
-            EventProducerServiceClient::connect(self.event_producer_addr.clone()).await
+            proto::event_producer_service_client::EventProducerServiceClient::connect(
+                self.event_producer_addr.clone(),
+            )
+            .await
         {
             self.delayer = None;
             Some(connection)
@@ -94,14 +91,14 @@ where
         if let Some(mut connection) = connection {
             let offset = offset().await.and_then(|offset| {
                 if let Offset::Timestamp(timestamp, seen) = offset {
-                    Some(EventProducerOffset {
+                    Some(proto::Offset {
                         timestamp: Some(Timestamp {
                             seconds: timestamp.timestamp(),
                             nanos: timestamp.nanosecond() as i32,
                         }),
                         seen: seen
                             .into_iter()
-                            .map(|(persistence_id, offset)| PersistenceIdSeqNr {
+                            .map(|(persistence_id, offset)| proto::PersistenceIdSeqNr {
                                 persistence_id: persistence_id.to_string(),
                                 seq_nr: offset as i64,
                             })
@@ -113,8 +110,8 @@ where
             });
 
             let request = Request::new(
-                tokio_stream::iter(vec![StreamIn {
-                    message: Some(stream_in::Message::Init(InitReq {
+                tokio_stream::iter(vec![proto::StreamIn {
+                    message: Some(proto::stream_in::Message::Init(proto::InitReq {
                         stream_id: self.stream_id.to_string(),
                         slice_min: self.slice_range.start as i32,
                         slice_max: self.slice_range.end as i32 - 1,
@@ -129,7 +126,7 @@ where
             if let Ok(response) = result {
                 let mut stream_outs = response.into_inner();
                 Box::pin(stream! {
-                    while let Some(Ok(StreamOut{ message: Some(stream_out::Message::Event(streamed_event)) })) = stream_outs.next().await {
+                    while let Some(Ok(proto::StreamOut{ message: Some(proto::stream_out::Message::Event(streamed_event)) })) = stream_outs.next().await {
                         let Some(payload) = streamed_event.payload else { continue };
 
                         let Ok(persistence_id) = streamed_event.persistence_id.parse::<PersistenceId>() else { break };
@@ -159,7 +156,7 @@ where
 mod tests {
 
     use super::*;
-    use crate::event_producer::{
+    use crate::proto::{
         event_producer_service_server::{EventProducerService, EventProducerServiceServer},
         stream_out, Event, EventTimestampRequest, EventTimestampResponse, LoadEventRequest,
         LoadEventResponse, Offset as EventProducerOffset, StreamOut,
@@ -185,7 +182,7 @@ mod tests {
 
         async fn events_by_slices(
             &self,
-            _request: Request<Streaming<StreamIn>>,
+            _request: Request<Streaming<proto::StreamIn>>,
         ) -> Result<Response<Self::EventsBySlicesStream>, Status> {
             let stream_event_time = self.event_time;
             let stream_event_seen_by = self.event_seen_by.clone();
@@ -204,7 +201,7 @@ mod tests {
                             }),
                             seen: stream_event_seen_by
                                 .iter()
-                                .map(|(persistence_id, seq_nr)| PersistenceIdSeqNr {
+                                .map(|(persistence_id, seq_nr)| proto::PersistenceIdSeqNr {
                                     persistence_id: persistence_id.to_string(),
                                     seq_nr: *seq_nr as i64,
                                 })
