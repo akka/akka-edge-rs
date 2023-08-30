@@ -34,3 +34,10 @@ jobs:
         cargo clippy --tests
         cargo fmt -- --check
         cargo test
+
+    - name: additional-examples-test
+      working-directory: examples/iot-service
+      run: |
+        cargo clippy --tests --no-default-features --features="grpc"
+        cargo test --no-default-features --features="grpc"
+  
