@@ -5,6 +5,7 @@ mod registration_projection;
 #[cfg(feature = "grpc")]
 mod registration_proto;
 mod temperature;
+mod temperature_production;
 mod udp_server;
 
 use clap::Parser;
@@ -29,6 +30,11 @@ struct Args {
     /// Logged commit log args
     #[clap(flatten)]
     cl_args: CommitLogArgs,
+
+    /// A socket address for connecting to a GRPC event consuming
+    /// service for temperature observations.
+    #[clap(env, long, default_value = "http://127.0.0.1:8101")]
+    event_consumer_addr: Uri,
 
     /// A socket address for connecting to a GRPC event producing
     /// service for registrations. Only relevant when building the
@@ -55,6 +61,7 @@ const MAX_REGISTRATION_MANAGER_COMMANDS: usize = 10;
 
 const MAX_REGISTRATION_PROJECTION_MANAGER_COMMANDS: usize = 1;
 const MAX_TEMPERATURE_MANAGER_COMMANDS: usize = 10;
+const MAX_TEMPERATURE_PRODUCTION_MANAGER_COMMANDS: usize = 10;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -93,6 +100,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // different.
     let registration_offset_key_secret_path = temperature_events_key_secret_path.clone();
 
+    // The path of a key to use to encrypt offsets for temperature productions. We'll
+    // just re-use the above key for convenience, but ordinarily, these keys would be
+    // different.
+    let temperature_offset_key_secret_path = temperature_events_key_secret_path.clone();
+
     if let Ok(None) = ss.get_secret(&temperature_events_key_secret_path).await {
         // If we can't write this initial secret then all bets are off
         let mut key = vec![0; 16];
@@ -118,6 +130,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Establish channels for the registration projection
     let (_registration_projection_command, registration_projection_command_receiver) =
         mpsc::channel(MAX_REGISTRATION_PROJECTION_MANAGER_COMMANDS);
+
+    // Establish channels for the temperature production
+    let (_temperature_production_command, temperature_production_command_receiver) =
+        mpsc::channel(MAX_TEMPERATURE_PRODUCTION_MANAGER_COMMANDS);
 
     // Start up the http service
     let routes = http_server::routes(
@@ -155,6 +171,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         registration_projection_command_receiver,
         args.cl_args.cl_root_path.join("registration-offsets"),
         temperature_command,
+    ));
+
+    // Start up a task to manage temperature productions
+    tokio::spawn(temperature_production::task(
+        cl.clone(),
+        args.event_consumer_addr,
+        ss.clone(),
+        temperature_events_key_secret_path.clone(),
+        temperature_offset_key_secret_path.clone(),
+        temperature_production_command_receiver,
+        args.cl_args.cl_root_path.join("temperature-offsets"),
     ));
 
     // All things started up but our temperature. We're running
