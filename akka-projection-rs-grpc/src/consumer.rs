@@ -156,11 +156,6 @@ where
 mod tests {
 
     use super::*;
-    use crate::proto::{
-        event_producer_service_server::{EventProducerService, EventProducerServiceServer},
-        stream_out, Event, EventTimestampRequest, EventTimestampResponse, LoadEventRequest,
-        LoadEventResponse, Offset as EventProducerOffset, StreamOut,
-    };
     use akka_persistence_rs::{EntityId, EntityType, PersistenceId};
     use async_stream::stream;
     use chrono::Utc;
@@ -177,8 +172,9 @@ mod tests {
     }
 
     #[async_trait]
-    impl EventProducerService for TestEventProducerService {
-        type EventsBySlicesStream = Pin<Box<dyn Stream<Item = Result<StreamOut, Status>> + Send>>;
+    impl proto::event_producer_service_server::EventProducerService for TestEventProducerService {
+        type EventsBySlicesStream =
+            Pin<Box<dyn Stream<Item = Result<proto::StreamOut, Status>> + Send>>;
 
         async fn events_by_slices(
             &self,
@@ -189,12 +185,12 @@ mod tests {
             Ok(Response::new(Box::pin(stream!({
                 let mut value = Vec::with_capacity(6);
                 0xffffffffu32.encode(&mut value).unwrap();
-                yield Ok(StreamOut {
-                    message: Some(stream_out::Message::Event(Event {
+                yield Ok(proto::StreamOut {
+                    message: Some(proto::stream_out::Message::Event(proto::Event {
                         persistence_id: "entity-type|entity-id".to_string(),
                         seq_nr: 0,
                         slice: 0,
-                        offset: Some(EventProducerOffset {
+                        offset: Some(proto::Offset {
                             timestamp: Some(Timestamp {
                                 seconds: stream_event_time.timestamp(),
                                 nanos: stream_event_time.nanosecond() as i32,
@@ -223,15 +219,16 @@ mod tests {
 
         async fn event_timestamp(
             &self,
-            _request: tonic::Request<EventTimestampRequest>,
-        ) -> std::result::Result<tonic::Response<EventTimestampResponse>, tonic::Status> {
+            _request: tonic::Request<proto::EventTimestampRequest>,
+        ) -> std::result::Result<tonic::Response<proto::EventTimestampResponse>, tonic::Status>
+        {
             todo!()
         }
 
         async fn load_event(
             &self,
-            _request: tonic::Request<LoadEventRequest>,
-        ) -> std::result::Result<tonic::Response<LoadEventResponse>, tonic::Status> {
+            _request: tonic::Request<proto::LoadEventRequest>,
+        ) -> std::result::Result<tonic::Response<proto::LoadEventResponse>, tonic::Status> {
             todo!()
         }
     }
@@ -250,10 +247,14 @@ mod tests {
         let task_kill_switch = server_kill_switch.clone();
         tokio::spawn(async move {
             Server::builder()
-                .add_service(EventProducerServiceServer::new(TestEventProducerService {
-                    event_time: task_event_time,
-                    event_seen_by: task_event_seen_by,
-                }))
+                .add_service(
+                    proto::event_producer_service_server::EventProducerServiceServer::new(
+                        TestEventProducerService {
+                            event_time: task_event_time,
+                            event_seen_by: task_event_seen_by,
+                        },
+                    ),
+                )
                 .serve_with_shutdown(
                     "127.0.0.1:50051".to_socket_addrs().unwrap().next().unwrap(),
                     task_kill_switch.notified(),

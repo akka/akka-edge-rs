@@ -6,6 +6,7 @@ use std::{future::Future, pin::Pin};
 
 use akka_persistence_rs::Offset;
 use async_trait::async_trait;
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::Stream;
 
 /// Errors for event processing by a handler.
@@ -62,4 +63,15 @@ pub trait SourceProvider {
     where
         F: Fn() -> FR + Send + Sync,
         FR: Future<Output = Option<Offset>> + Send;
+}
+
+/// Provides a sink of envelopes where each envelope must
+/// be processed before more envelopes are consumed.
+#[async_trait]
+pub trait SinkProvider {
+    /// The envelope processed by the provider.
+    type Envelope;
+
+    /// Send envelopes.
+    async fn sink(&mut self, envelopes: mpsc::Receiver<(Self::Envelope, oneshot::Sender<()>)>);
 }

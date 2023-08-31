@@ -1,9 +1,8 @@
 mod http_server;
+mod proto;
 #[cfg(feature = "local")]
 mod registration;
 mod registration_projection;
-#[cfg(feature = "grpc")]
-mod registration_proto;
 mod temperature;
 mod temperature_production;
 mod udp_server;
@@ -11,9 +10,9 @@ mod udp_server;
 use clap::Parser;
 use git_version::git_version;
 use log::info;
-use rand::RngCore;
 #[cfg(feature = "grpc")]
-use registration_proto as registration;
+use proto as registration;
+use rand::RngCore;
 use std::{collections::HashMap, error::Error, net::SocketAddr};
 use streambed::secret_store::{SecretData, SecretStore};
 use streambed_confidant::{args::SsArgs, FileSecretStore};

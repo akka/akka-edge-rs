@@ -6,6 +6,7 @@ use smol_str::SmolStr;
 
 pub mod consumer;
 mod delayer;
+pub mod producer;
 
 /// An envelope wraps a gRPC event associated with a specific entity.
 #[derive(Clone, Debug, PartialEq)]
@@ -40,6 +41,9 @@ impl<E> WithOffset for EventEnvelope<E> {
         Offset::Timestamp(self.timestamp, self.seen.clone())
     }
 }
+
+/// Identifies an event producer to a consumer
+pub type OriginId = SmolStr;
 
 /// The logical stream identifier, mapped to a specific internal entity type by
 /// the producer settings
