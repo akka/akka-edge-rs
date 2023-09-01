@@ -60,7 +60,6 @@ where
 pub struct GrpcEventProducer<E> {
     entity_type: EntityType,
     grpc_producer: mpsc::Sender<(EventEnvelope<E>, oneshot::Sender<()>)>,
-    offset: u64,
 }
 
 impl<E> GrpcEventProducer<E> {
@@ -71,7 +70,6 @@ impl<E> GrpcEventProducer<E> {
         Self {
             entity_type,
             grpc_producer,
-            offset: 0,
         }
     }
 
@@ -95,15 +93,13 @@ impl<E> GrpcEventProducer<E> {
                     persistence_id: persistence_id.clone(),
                     event: transformation.event,
                     timestamp: transformation.timestamp.unwrap_or_else(Utc::now),
-                    seen: vec![(persistence_id, self.offset)],
+                    seen: vec![],
                 },
                 reply,
             ))
             .await
             .map_err(|_| HandlerError)?;
         reply_receiver.await.map_err(|_| HandlerError)?;
-
-        self.offset = self.offset.wrapping_add(1);
 
         Ok(())
     }
