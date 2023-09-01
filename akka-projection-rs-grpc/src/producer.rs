@@ -85,24 +85,16 @@ impl<E> GrpcEventProducer<E> {
             phantom: PhantomData,
         }
     }
-}
 
-#[async_trait]
-impl<E> Handler for GrpcEventProducer<E>
-where
-    E: Send,
-{
-    type Envelope = Transformation<E>;
-
-    async fn process(&mut self, envelope: Self::Envelope) -> Result<(), HandlerError> {
+    async fn process(&mut self, transformation: Transformation<E>) -> Result<(), HandlerError> {
         let (reply, reply_receiver) = oneshot::channel();
-        let persistence_id = PersistenceId::new(self.entity_type.clone(), envelope.entity_id);
+        let persistence_id = PersistenceId::new(self.entity_type.clone(), transformation.entity_id);
         self.grpc_producer
             .send((
                 EventEnvelope {
                     persistence_id: persistence_id.clone(),
-                    event: envelope.event,
-                    timestamp: envelope.timestamp.unwrap_or_else(Utc::now),
+                    event: transformation.event,
+                    timestamp: transformation.timestamp.unwrap_or_else(Utc::now),
                     seen: vec![(persistence_id, self.offset)],
                 },
                 reply,
