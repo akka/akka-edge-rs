@@ -41,7 +41,7 @@ impl Handler for TemperatureHandler {
         };
 
         self.grpc_producer
-            .process((envelope.entity_id, event))
+            .process((envelope.entity_id, envelope.timestamp, event))
             .await
     }
 }

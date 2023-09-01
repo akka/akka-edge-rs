@@ -225,7 +225,7 @@ mod tests {
         {
             Box::pin(stream! {
                 if offset().await.is_none() {
-                    yield EventEnvelope::new(self.entity_id.clone(), MyEvent { value:self.event_value.clone() }, 0);
+                    yield EventEnvelope::new(self.entity_id.clone(), None, MyEvent { value:self.event_value.clone() }, 0);
                     time::sleep(MIN_SAVE_OFFSET_INTERVAL * 2).await;
                 }
             })
@@ -247,6 +247,7 @@ mod tests {
                 envelope,
                 EventEnvelope {
                     entity_id: self.entity_id.clone(),
+                    timestamp: None,
                     event: MyEvent {
                         value: self.event_value.clone()
                     },

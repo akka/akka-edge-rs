@@ -6,6 +6,7 @@ use akka_persistence_rs::{
 };
 use async_stream::stream;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{io, marker::PhantomData, pin::Pin, sync::Arc};
 use streambed::{
@@ -21,17 +22,24 @@ use tokio_stream::{Stream, StreamExt};
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventEnvelope<E> {
     pub entity_id: EntityId,
+    pub timestamp: Option<DateTime<Utc>>,
     pub event: E,
     pub offset: CommitLogOffset,
 }
 
 impl<E> EventEnvelope<E> {
-    pub fn new<EI>(entity_id: EI, event: E, offset: CommitLogOffset) -> Self
+    pub fn new<EI>(
+        entity_id: EI,
+        timestamp: Option<DateTime<Utc>>,
+        event: E,
+        offset: CommitLogOffset,
+    ) -> Self
     where
         EI: Into<EntityId>,
     {
         Self {
             entity_id: entity_id.into(),
+            timestamp,
             event,
             offset,
         }
@@ -82,7 +90,7 @@ where
             |value| ciborium::de::from_reader(value),
         )
         .await
-        .map(|event| EventEnvelope::new(entity_id, event, record.offset))
+        .map(|event| EventEnvelope::new(entity_id, record.timestamp, event, record.offset))
     }
 
     #[cfg(not(feature = "cbor"))]
@@ -461,6 +469,7 @@ mod tests {
             let event = MyEvent { value };
             Some(EventEnvelope {
                 entity_id,
+                timestamp: record.timestamp,
                 event,
                 offset: 0,
             })

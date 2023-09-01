@@ -140,7 +140,7 @@ where
                             break
                         }
                         let Ok(event) = E::decode(Bytes::from(payload.value)) else { break };
-                        yield EventEnvelope::with_offset(persistence_id, event, timestamp, seen)
+                        yield EventEnvelope {persistence_id, event, timestamp, seen};
                     }
                 })
             } else {
@@ -289,12 +289,12 @@ mod tests {
 
             assert_eq!(
                 envelope,
-                Some(EventEnvelope::with_offset(
+                Some(EventEnvelope {
                     persistence_id,
-                    0xffffffff,
-                    event_time,
-                    event_seen_by
-                ))
+                    event: 0xffffffff,
+                    timestamp: event_time,
+                    seen: event_seen_by,
+                })
             );
 
             break;

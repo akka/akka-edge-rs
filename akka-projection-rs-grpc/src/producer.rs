@@ -6,6 +6,8 @@ use akka_projection_rs::HandlerError;
 use akka_projection_rs::SinkProvider;
 use async_stream::stream;
 use async_trait::async_trait;
+use chrono::DateTime;
+use chrono::Utc;
 use prost::Message;
 use std::marker::PhantomData;
 use tokio::sync::mpsc;
@@ -44,19 +46,21 @@ impl<E> Handler for GrpcEventProducer<E>
 where
     E: Send,
 {
-    type Envelope = (EntityId, E);
+    type Envelope = (EntityId, Option<DateTime<Utc>>, E);
 
     async fn process(&mut self, envelope: Self::Envelope) -> Result<(), HandlerError> {
-        let (entity_id, event) = envelope;
+        let (entity_id, timestamp, event) = envelope;
 
         let (reply, reply_receiver) = oneshot::channel();
+        let persistence_id = PersistenceId::new(self.entity_type.clone(), entity_id);
         self.grpc_producer
             .send((
-                EventEnvelope::new(
-                    PersistenceId::new(self.entity_type.clone(), entity_id.clone()),
+                EventEnvelope {
+                    persistence_id: persistence_id.clone(),
                     event,
-                    self.offset,
-                ),
+                    timestamp: timestamp.unwrap_or_else(Utc::now),
+                    seen: vec![(persistence_id, self.offset)],
+                },
                 reply,
             ))
             .await

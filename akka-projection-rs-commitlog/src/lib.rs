@@ -253,6 +253,7 @@ mod tests {
             let event = MyEvent { value };
             Some(EventEnvelope {
                 entity_id,
+                timestamp: record.timestamp,
                 event,
                 offset: 0,
             })
@@ -326,6 +327,7 @@ mod tests {
             envelopes.next().await,
             Some(EventEnvelope::new(
                 entity_id,
+                None,
                 MyEvent { value: event_value },
                 0
             ))

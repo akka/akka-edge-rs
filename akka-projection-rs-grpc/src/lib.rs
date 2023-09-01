@@ -17,31 +17,6 @@ pub struct EventEnvelope<E> {
     pub seen: Vec<(PersistenceId, u64)>,
 }
 
-impl<E> EventEnvelope<E> {
-    pub fn new(persistence_id: PersistenceId, event: E, offset: u64) -> Self {
-        Self::with_offset(
-            persistence_id.clone(),
-            event,
-            Utc::now(),
-            vec![(persistence_id, offset)],
-        )
-    }
-
-    pub fn with_offset(
-        persistence_id: PersistenceId,
-        event: E,
-        timestamp: DateTime<Utc>,
-        seen: Vec<(PersistenceId, u64)>,
-    ) -> Self {
-        Self {
-            persistence_id,
-            event,
-            timestamp,
-            seen,
-        }
-    }
-}
-
 impl<E> WithOffset for EventEnvelope<E> {
     fn offset(&self) -> Offset {
         Offset::Timestamp(self.timestamp, self.seen.clone())
