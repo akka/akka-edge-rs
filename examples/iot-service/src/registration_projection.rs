@@ -47,20 +47,26 @@ impl Handler for RegistrationHandler {
 
     async fn process(&mut self, envelope: Self::Envelope) -> Result<(), HandlerError> {
         #[cfg(feature = "local")]
-        let registration::Event::Registered { secret } = envelope.event;
+        let (entity_id, secret) = {
+            let registration::Event::Registered { secret } = envelope.event;
+            (envelope.entity_id, secret)
+        };
 
         #[cfg(feature = "grpc")]
-        let secret = {
-            let registration::Registered { secret, .. } = envelope.event;
-            let Some(secret) = secret else {
-                return Err(HandlerError);
+        let (entity_id, secret) = {
+            let secret = {
+                let registration::Registered { secret, .. } = envelope.event;
+                let Some(secret) = secret else {
+                    return Err(HandlerError);
+                };
+                secret.value.into()
             };
-            secret.value.into()
+            (envelope.persistence_id.entity_id, secret)
         };
 
         self.temperature_sender
             .send(Message::new(
-                envelope.entity_id,
+                entity_id,
                 temperature::Command::Register { secret },
             ))
             .await

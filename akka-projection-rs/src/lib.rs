@@ -72,6 +72,6 @@ pub trait SinkProvider {
     /// The envelope processed by the provider.
     type Envelope;
 
-    /// Send envelopes.
+    /// Send envelopes along with a reply channel.
     async fn sink(&mut self, envelopes: mpsc::Receiver<(Self::Envelope, oneshot::Sender<()>)>);
 }

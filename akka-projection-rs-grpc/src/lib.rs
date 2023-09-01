@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 
-use akka_persistence_rs::{EntityId, Offset, PersistenceId, WithOffset};
+use akka_persistence_rs::{Offset, PersistenceId, WithOffset};
 use chrono::{DateTime, Utc};
 use smol_str::SmolStr;
 
@@ -11,24 +11,30 @@ pub mod producer;
 /// An envelope wraps a gRPC event associated with a specific entity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventEnvelope<E> {
-    pub entity_id: EntityId,
+    pub persistence_id: PersistenceId,
     pub event: E,
     pub timestamp: DateTime<Utc>,
     pub seen: Vec<(PersistenceId, u64)>,
 }
 
 impl<E> EventEnvelope<E> {
-    pub fn new<EI>(
-        entity_id: EI,
+    pub fn new(persistence_id: PersistenceId, event: E, offset: u64) -> Self {
+        Self::with_offset(
+            persistence_id.clone(),
+            event,
+            Utc::now(),
+            vec![(persistence_id, offset)],
+        )
+    }
+
+    pub fn with_offset(
+        persistence_id: PersistenceId,
         event: E,
         timestamp: DateTime<Utc>,
         seen: Vec<(PersistenceId, u64)>,
-    ) -> Self
-    where
-        EI: Into<EntityId>,
-    {
+    ) -> Self {
         Self {
-            entity_id: entity_id.into(),
+            persistence_id,
             event,
             timestamp,
             seen,

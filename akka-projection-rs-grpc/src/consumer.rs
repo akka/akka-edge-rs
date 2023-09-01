@@ -140,7 +140,7 @@ where
                             break
                         }
                         let Ok(event) = E::decode(Bytes::from(payload.value)) else { break };
-                        yield EventEnvelope::new(persistence_id.entity_id, event, timestamp, seen)
+                        yield EventEnvelope::with_offset(persistence_id, event, timestamp, seen)
                     }
                 })
             } else {
@@ -237,8 +237,9 @@ mod tests {
     async fn can_source() {
         let entity_type = EntityType::from("entity-type");
         let entity_id = EntityId::from("entity-id");
+        let persistence_id = PersistenceId::new(entity_type, entity_id.clone());
         let event_time = Utc::now();
-        let event_seen_by = vec![(PersistenceId::new(entity_type, entity_id.clone()), 1)];
+        let event_seen_by = vec![(persistence_id.clone(), 1)];
 
         let server_kill_switch = Arc::new(Notify::new());
 
@@ -288,8 +289,8 @@ mod tests {
 
             assert_eq!(
                 envelope,
-                Some(EventEnvelope::new(
-                    entity_id,
+                Some(EventEnvelope::with_offset(
+                    persistence_id,
                     0xffffffff,
                     event_time,
                     event_seen_by

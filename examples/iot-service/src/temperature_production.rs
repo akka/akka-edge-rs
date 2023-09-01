@@ -8,26 +8,22 @@ use akka_persistence_rs_commitlog::EventEnvelope as CommitLogEventEnvelope;
 use akka_projection_rs::SinkProvider;
 use akka_projection_rs::{Handler, HandlerError};
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
-use akka_projection_rs_grpc::producer::GrpcSinkProvider;
-use akka_projection_rs_grpc::{EventEnvelope as GrpcEventEnvelope, OriginId, StreamId};
+use akka_projection_rs_grpc::producer::{GrpcEventProducer, GrpcSinkProvider};
+use akka_projection_rs_grpc::{OriginId, StreamId};
 use akka_projection_rs_storage::Command;
 use async_trait::async_trait;
-use chrono::Utc;
 use std::sync::Arc;
 use std::{path::PathBuf, time::Duration};
 use streambed::commit_log::Topic;
 use streambed_confidant::FileSecretStore;
 use streambed_logged::FileLog;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tonic::transport::Uri;
 
 /// A handler for forwarding on temperature envelopes from a projection source to
 /// our temperature sensor entity.
 pub struct TemperatureHandler {
-    grpc_producer: mpsc::Sender<(
-        GrpcEventEnvelope<proto::TemperatureRead>,
-        oneshot::Sender<()>,
-    )>,
+    grpc_producer: GrpcEventProducer<proto::TemperatureRead>,
 }
 
 #[async_trait]
@@ -38,22 +34,15 @@ impl Handler for TemperatureHandler {
         let temperature::Event::TemperatureRead { temperature } = envelope.event else {
             return Ok(());
         };
-        let envelope = GrpcEventEnvelope {
-            entity_id: envelope.entity_id.clone(),
-            event: proto::TemperatureRead {
-                sensor_id: envelope.entity_id.to_string(),
-                temperature: temperature as i32,
-            },
-            timestamp: Utc::now(),
-            // FIXME: is this correct?
-            seen: vec![],
+
+        let event = proto::TemperatureRead {
+            sensor_id: envelope.entity_id.to_string(),
+            temperature: temperature as i32,
         };
-        let (reply, reply_receiver) = oneshot::channel();
-        if self.grpc_producer.send((envelope, reply)).await.is_ok() {
-            reply_receiver.await.map_err(|_| HandlerError)
-        } else {
-            Err(HandlerError)
-        }
+
+        self.grpc_producer
+            .process((envelope.entity_id, event))
+            .await
     }
 }
 
@@ -68,9 +57,12 @@ pub async fn task(
     state_storage_path: PathBuf,
 ) {
     // Establish a sink of envelopes that will be forwarded
-    // on to a consumer via gRPC.
+    // on to a consumer via gRPC producer handler.
 
     let (grpc_producer, grpc_producer_receiver) = mpsc::channel(10);
+
+    let grpc_producer =
+        GrpcEventProducer::new(EntityType::from(temperature::EVENTS_TOPIC), grpc_producer);
 
     tokio::spawn(async {
         let mut sink_provider = GrpcSinkProvider::new(

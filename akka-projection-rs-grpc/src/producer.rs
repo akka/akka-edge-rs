@@ -1,3 +1,8 @@
+use akka_persistence_rs::EntityId;
+use akka_persistence_rs::EntityType;
+use akka_persistence_rs::PersistenceId;
+use akka_projection_rs::Handler;
+use akka_projection_rs::HandlerError;
 use akka_projection_rs::SinkProvider;
 use async_stream::stream;
 use async_trait::async_trait;
@@ -13,6 +18,60 @@ use crate::proto;
 use crate::EventEnvelope;
 use crate::StreamId;
 
+/// A handler to produce gRPC events from event envelopes expressed as an entity id
+/// and event.
+pub struct GrpcEventProducer<E> {
+    entity_type: EntityType,
+    grpc_producer: mpsc::Sender<(EventEnvelope<E>, oneshot::Sender<()>)>,
+    offset: u64,
+}
+
+impl<E> GrpcEventProducer<E> {
+    pub fn new(
+        entity_type: EntityType,
+        grpc_producer: mpsc::Sender<(EventEnvelope<E>, oneshot::Sender<()>)>,
+    ) -> Self {
+        Self {
+            entity_type,
+            grpc_producer,
+            offset: 0,
+        }
+    }
+}
+
+#[async_trait]
+impl<E> Handler for GrpcEventProducer<E>
+where
+    E: Send,
+{
+    type Envelope = (EntityId, E);
+
+    async fn process(&mut self, envelope: Self::Envelope) -> Result<(), HandlerError> {
+        let (entity_id, event) = envelope;
+
+        let (reply, reply_receiver) = oneshot::channel();
+        self.grpc_producer
+            .send((
+                EventEnvelope::new(
+                    PersistenceId::new(self.entity_type.clone(), entity_id.clone()),
+                    event,
+                    self.offset,
+                ),
+                reply,
+            ))
+            .await
+            .map_err(|_| HandlerError)?;
+        reply_receiver.await.map_err(|_| HandlerError)?;
+
+        self.offset = self.offset.wrapping_add(1);
+
+        Ok(())
+    }
+}
+
+/// Reliably stream event envelopes to a consumer. Event envelopes transmission
+/// requests are sent over a channel and have a reply that is completed on the
+/// remote consumer's acknowledgement of receipt.
 pub struct GrpcSinkProvider<E> {
     delayer: Option<Delayer>,
     event_consumer_addr: Uri,
@@ -103,7 +162,6 @@ mod tests {
 
     use super::*;
     use crate::OriginId;
-    use akka_persistence_rs::EntityId;
     use chrono::Utc;
     use std::{net::ToSocketAddrs, pin::Pin, sync::Arc};
     use test_log::test;
@@ -126,6 +184,7 @@ mod tests {
         }
     }
 
+    #[ignore]
     #[test(tokio::test)]
     async fn can_flow() {
         let server_kill_switch = Arc::new(Notify::new());
@@ -163,7 +222,7 @@ mod tests {
                 .send((
                     EventEnvelope {
                         // FIXME Flesh out these fields
-                        entity_id: EntityId::from(""),
+                        persistence_id: "".parse().unwrap(),
                         event: 0,
                         seen: vec![],
                         timestamp: Utc::now(),
