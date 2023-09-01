@@ -4,8 +4,8 @@ use akka_projection_rs::SourceProvider;
 use async_stream::stream;
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::DateTime;
 use chrono::NaiveDateTime;
+use chrono::TimeZone;
 use chrono::Timelike;
 use chrono::Utc;
 use prost::Message;
@@ -133,7 +133,7 @@ where
                         let Some(offset) = streamed_event.offset else { break };
                         let Some(timestamp) = offset.timestamp else { break };
                         let Some(timestamp) = NaiveDateTime::from_timestamp_opt(timestamp.seconds, timestamp.nanos as u32) else { break };
-                        let timestamp = DateTime::from_utc(timestamp, Utc);
+                        let timestamp = Utc.from_utc_datetime(&timestamp);
                         let seen = offset.seen.iter().flat_map(|pis| pis.persistence_id.parse().ok().map(|pid|(pid, pis.seq_nr as u64))).collect();
 
                         if !payload.type_url.starts_with("type.googleapis.com/") {
@@ -158,7 +158,7 @@ mod tests {
     use super::*;
     use akka_persistence_rs::{EntityId, EntityType, PersistenceId};
     use async_stream::stream;
-    use chrono::Utc;
+    use chrono::{DateTime, Utc};
     use prost_types::Any;
     use std::{net::ToSocketAddrs, sync::Arc};
     use test_log::test;
