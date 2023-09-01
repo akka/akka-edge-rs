@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 use tonic::transport::Uri;
 
 /// A handler for forwarding on temperature envelopes from a projection source to
-/// our temperature sensor entity.
+/// a remote gRPC consumer.
 pub struct TemperatureHandler {
     grpc_producer: GrpcEventProducer<proto::TemperatureRead>,
 }
