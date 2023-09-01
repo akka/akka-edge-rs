@@ -6,12 +6,10 @@ use crate::temperature::{self, EventEnvelopeMarshaler};
 use akka_persistence_rs::EntityType;
 use akka_persistence_rs_commitlog::EventEnvelope as CommitLogEventEnvelope;
 use akka_projection_rs::SinkProvider;
-use akka_projection_rs::{Handler, HandlerError};
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
-use akka_projection_rs_grpc::producer::{GrpcEventProducer, GrpcSinkProvider};
+use akka_projection_rs_grpc::producer::{GrpcEventProducer, GrpcSinkProvider, Transformation};
 use akka_projection_rs_grpc::{OriginId, StreamId};
 use akka_projection_rs_storage::Command;
-use async_trait::async_trait;
 use std::sync::Arc;
 use std::{path::PathBuf, time::Duration};
 use streambed::commit_log::Topic;
@@ -19,32 +17,6 @@ use streambed_confidant::FileSecretStore;
 use streambed_logged::FileLog;
 use tokio::sync::mpsc;
 use tonic::transport::Uri;
-
-/// A handler for forwarding on temperature envelopes from a projection source to
-/// a remote gRPC consumer.
-pub struct TemperatureHandler {
-    grpc_producer: GrpcEventProducer<proto::TemperatureRead>,
-}
-
-#[async_trait]
-impl Handler for TemperatureHandler {
-    type Envelope = CommitLogEventEnvelope<temperature::Event>;
-
-    async fn process(&mut self, envelope: Self::Envelope) -> Result<(), HandlerError> {
-        let temperature::Event::TemperatureRead { temperature } = envelope.event else {
-            return Ok(());
-        };
-
-        let event = proto::TemperatureRead {
-            sensor_id: envelope.entity_id.to_string(),
-            temperature: temperature as i32,
-        };
-
-        self.grpc_producer
-            .process((envelope.entity_id, envelope.timestamp, event))
-            .await
-    }
-}
 
 /// Apply sensor observations to a remote consumer.
 pub async fn task(
@@ -87,9 +59,24 @@ pub async fn task(
         EntityType::from(temperature::EVENTS_TOPIC),
     );
 
-    // Declare a handler to forward projection events on to the remote consumer.
+    // Transform events from the commit log to our gRPC producer.
 
-    let handler = TemperatureHandler { grpc_producer };
+    let transformer = |envelope: CommitLogEventEnvelope<temperature::Event>| {
+        let temperature::Event::TemperatureRead { temperature } = envelope.event else {
+            return None;
+        };
+
+        let event = proto::TemperatureRead {
+            sensor_id: envelope.entity_id.to_string(),
+            temperature: temperature as i32,
+        };
+
+        Some(Transformation {
+            entity_id: envelope.entity_id,
+            timestamp: envelope.timestamp,
+            event,
+        })
+    };
 
     // Finally, start up a projection that will use Streambed storage
     // to remember the offset consumed. This then permits us to restart
@@ -101,7 +88,7 @@ pub async fn task(
         &state_storage_path,
         receiver,
         source_provider,
-        handler,
+        grpc_producer.handler(transformer),
         Duration::from_millis(100),
     )
     .await

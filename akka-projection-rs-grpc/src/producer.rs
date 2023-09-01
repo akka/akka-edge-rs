@@ -20,8 +20,43 @@ use crate::proto;
 use crate::EventEnvelope;
 use crate::StreamId;
 
-/// A handler to produce gRPC events from event envelopes expressed as an entity id
-/// and event.
+/// The result of a transformation function for the purposes of
+/// passing data on to a gRPC producer.
+pub struct Transformation<E> {
+    pub entity_id: EntityId,
+    pub timestamp: Option<DateTime<Utc>>,
+    pub event: E,
+}
+
+/// Processes events transformed from some unknown event envelope (EI)
+/// to then pass on to a gRPC event producer.
+pub struct GrpcEventProcessor<E, EI, F>
+where
+    F: Fn(EI) -> Option<Transformation<E>>,
+{
+    producer: GrpcEventProducer<E>,
+    transformer: F,
+    phantom: PhantomData<EI>,
+}
+
+#[async_trait]
+impl<EI, E, F> Handler for GrpcEventProcessor<E, EI, F>
+where
+    EI: Send,
+    E: Send,
+    F: Fn(EI) -> Option<Transformation<E>> + Send,
+{
+    type Envelope = EI;
+
+    async fn process(&mut self, envelope: Self::Envelope) -> Result<(), HandlerError> {
+        let Some(envelope) = (self.transformer)(envelope) else {
+            return Ok(());
+        };
+        self.producer.process(envelope).await
+    }
+}
+
+/// Produce gRPC events given a user-supplied transformation function.
 pub struct GrpcEventProducer<E> {
     entity_type: EntityType,
     grpc_producer: mpsc::Sender<(EventEnvelope<E>, oneshot::Sender<()>)>,
@@ -39,6 +74,17 @@ impl<E> GrpcEventProducer<E> {
             offset: 0,
         }
     }
+
+    pub fn handler<EI, F>(self, transformer: F) -> GrpcEventProcessor<E, EI, F>
+    where
+        F: Fn(EI) -> Option<Transformation<E>>,
+    {
+        GrpcEventProcessor {
+            producer: self,
+            transformer,
+            phantom: PhantomData,
+        }
+    }
 }
 
 #[async_trait]
@@ -46,19 +92,17 @@ impl<E> Handler for GrpcEventProducer<E>
 where
     E: Send,
 {
-    type Envelope = (EntityId, Option<DateTime<Utc>>, E);
+    type Envelope = Transformation<E>;
 
     async fn process(&mut self, envelope: Self::Envelope) -> Result<(), HandlerError> {
-        let (entity_id, timestamp, event) = envelope;
-
         let (reply, reply_receiver) = oneshot::channel();
-        let persistence_id = PersistenceId::new(self.entity_type.clone(), entity_id);
+        let persistence_id = PersistenceId::new(self.entity_type.clone(), envelope.entity_id);
         self.grpc_producer
             .send((
                 EventEnvelope {
                     persistence_id: persistence_id.clone(),
-                    event,
-                    timestamp: timestamp.unwrap_or_else(Utc::now),
+                    event: envelope.event,
+                    timestamp: envelope.timestamp.unwrap_or_else(Utc::now),
                     seen: vec![(persistence_id, self.offset)],
                 },
                 reply,
