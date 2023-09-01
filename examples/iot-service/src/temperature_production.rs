@@ -67,7 +67,6 @@ pub async fn task(
         };
 
         let event = proto::TemperatureRead {
-            sensor_id: envelope.entity_id.to_string(),
             temperature: temperature as i32,
         };
 
