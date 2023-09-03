@@ -1,8 +1,8 @@
 use akka_persistence_rs::EntityId;
 use akka_persistence_rs::EntityType;
 use akka_persistence_rs::PersistenceId;
-use akka_projection_rs::FlowingHandler;
 use akka_projection_rs::HandlerError;
+use akka_projection_rs::PendingHandler;
 use akka_projection_rs::SinkProvider;
 use async_stream::stream;
 use async_trait::async_trait;
@@ -43,7 +43,7 @@ where
 }
 
 #[async_trait]
-impl<EI, E, F> FlowingHandler for GrpcEventProcessor<E, EI, F>
+impl<EI, E, F> PendingHandler for GrpcEventProcessor<E, EI, F>
 where
     EI: Send,
     E: Send,

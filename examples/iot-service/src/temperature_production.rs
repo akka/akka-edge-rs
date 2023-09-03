@@ -5,7 +5,7 @@ use crate::proto;
 use crate::temperature::{self, EventEnvelopeMarshaler};
 use akka_persistence_rs::EntityType;
 use akka_persistence_rs_commitlog::EventEnvelope as CommitLogEventEnvelope;
-use akka_projection_rs::{handlers, SinkProvider};
+use akka_projection_rs::SinkProvider;
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
 use akka_projection_rs_grpc::producer::{GrpcEventProducer, GrpcSinkProvider, Transformation};
 use akka_projection_rs_grpc::{OriginId, StreamId};
@@ -93,7 +93,7 @@ pub async fn task(
         &state_storage_path,
         receiver,
         source_provider,
-        handlers::flowing(grpc_producer.handler(transformer), 10),
+        grpc_producer.handler(transformer),
         Duration::from_millis(100),
     )
     .await

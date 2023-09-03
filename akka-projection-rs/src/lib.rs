@@ -13,43 +13,35 @@ use tokio_stream::Stream;
 pub enum Handlers<A, B>
 where
     A: Handler,
-    B: FlowingHandler,
+    B: PendingHandler,
 {
-    Sequential(A, B),
-    Flowing(B, usize, A),
+    Completed(A, B),
+    Pending(B, A),
 }
 
-/// Convenience functions for creating handlers.
-pub mod handlers {
-    use super::*;
-
-    /// A handler is sequential where envelopes are processed upon the previous one
-    /// having been processed successfully.
-    pub fn sequential<A, E>(handler: A) -> Handlers<A, UnusedFlowingHandler<E>>
-    where
-        A: Handler,
-        E: Send,
-    {
-        Handlers::Sequential(
+impl<A, E> From<A> for Handlers<A, UnusedFlowingHandler<E>>
+where
+    A: Handler,
+    E: Send,
+{
+    fn from(handler: A) -> Self {
+        Handlers::Completed(
             handler,
             UnusedFlowingHandler {
                 phantom: PhantomData,
             },
         )
     }
+}
 
-    /// A handler is "flowing" when envelopes can be passed through and the
-    /// result of processing one is not immediately known. Meanwhile, more
-    /// envelopes can be passed though. Flows have an upper limit on the
-    /// number that may be in-flight at any one time.
-    pub fn flowing<B, E>(handler: B, max_in_flight: usize) -> Handlers<UnusedHandler<E>, B>
-    where
-        B: FlowingHandler,
-        E: Send,
-    {
-        Handlers::Flowing(
+impl<B, E> From<B> for Handlers<UnusedHandler<E>, B>
+where
+    B: PendingHandler,
+    E: Send,
+{
+    fn from(handler: B) -> Self {
+        Handlers::Pending(
             handler,
-            max_in_flight,
             UnusedHandler {
                 phantom: PhantomData,
             },
@@ -66,7 +58,9 @@ pub trait Handler {
     /// The envelope processed by the handler.
     type Envelope: Send;
 
-    /// Process an envelope. Implement when not overriding the `process_pending` method.
+    /// Process an envelope.
+    /// A handler's result is "completed" where envelopes are processed upon the previous one
+    /// having been processed successfully.
     async fn process(&mut self, _envelope: Self::Envelope) -> Result<(), HandlerError>;
 }
 
@@ -89,11 +83,14 @@ where
 
 /// Handle event envelopes in any way that an application requires.
 #[async_trait]
-pub trait FlowingHandler {
+pub trait PendingHandler {
     /// The envelope processed by the handler.
     type Envelope: Send;
 
     /// Process an envelope with a pending result.
+    /// A handler's result is "pending" when envelopes can be passed through and the
+    /// result of processing one is not immediately known. Meanwhile, more
+    /// envelopes can be passed though.
     async fn process_pending(
         &mut self,
         envelope: Self::Envelope,
@@ -106,7 +103,7 @@ pub struct UnusedFlowingHandler<E> {
 }
 
 #[async_trait]
-impl<E> FlowingHandler for UnusedFlowingHandler<E>
+impl<E> PendingHandler for UnusedFlowingHandler<E>
 where
     E: Send,
 {

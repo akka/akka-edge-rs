@@ -3,7 +3,7 @@
 use std::{path::Path, time::Duration};
 
 use akka_persistence_rs::{Offset, WithOffset};
-use akka_projection_rs::{FlowingHandler, Handler, Handlers, SourceProvider};
+use akka_projection_rs::{Handler, Handlers, PendingHandler, SourceProvider};
 use log::error;
 use serde::{Deserialize, Serialize};
 use streambed::secret_store::SecretStore;
@@ -29,20 +29,23 @@ struct StorableState {
 /// the offset to storage. Therefore, high bursts of events are not
 /// slowed down by having to persist an offset to storage. This strategy
 /// works given the at-least-once semantics.
-pub async fn run<A, B, E, SP>(
+pub async fn run<A, B, E, IH, SP>(
     secret_store: &impl SecretStore,
     secret_path: &str,
     state_storage_path: &Path,
     mut receiver: Receiver<Command>,
     mut source_provider: SP,
-    mut handler: Handlers<A, B>,
+    handler: IH,
     min_save_offset_interval: Duration,
 ) where
     A: Handler<Envelope = E> + Send,
-    B: FlowingHandler<Envelope = E> + Send,
+    B: PendingHandler<Envelope = E> + Send,
     E: WithOffset,
+    IH: Into<Handlers<A, B>>,
     SP: SourceProvider<Envelope = E>,
 {
+    let mut handler = handler.into();
+
     'outer: loop {
         let mut source = source_provider
             .source(|| async {
@@ -72,12 +75,12 @@ pub async fn run<A, B, E, SP>(
                     if let Some(envelope) = envelope {
                         let offset = envelope.offset();
                         match &mut handler {
-                            Handlers::Sequential(handler, _) => {
+                            Handlers::Completed(handler, _) => {
                                 if handler.process(envelope).await.is_err() {
                                     break;
                                 }
                             }
-                            Handlers::Flowing(handler, _, _) => {
+                            Handlers::Pending(handler, _) => {
                                 if let Ok(pending) = handler.process_pending(envelope).await {
                                     if pending.await.is_err() {
                                         break;
@@ -298,7 +301,7 @@ mod tests {
                     entity_id: entity_id.clone(),
                     event_value: event_value.clone(),
                 },
-                Handlers::Sequential(
+                Handlers::Completed(
                     MyHandler {
                         entity_id: entity_id.clone(),
                         event_value: event_value.clone(),
