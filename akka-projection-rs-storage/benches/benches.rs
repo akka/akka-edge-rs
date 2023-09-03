@@ -3,7 +3,7 @@ use std::{
 };
 
 use akka_persistence_rs::{Offset, WithOffset};
-use akka_projection_rs::{Handler, HandlerError, SourceProvider};
+use akka_projection_rs::{handlers, Handler, HandlerError, SourceProvider};
 use async_stream::stream;
 use async_trait::async_trait;
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -140,9 +140,9 @@ fn criterion_benchmark(c: &mut Criterion) {
                 &storage_path,
                 registration_projection_command_receiver,
                 TestSourceProvider,
-                TestHandler {
+                handlers::sequential(TestHandler {
                     events_processed: task_events_processed,
-                },
+                }),
                 Duration::from_secs(1), // Not testing out fs performance
             )
             .await

@@ -5,7 +5,7 @@ use crate::proto;
 use crate::temperature::{self, EventEnvelopeMarshaler};
 use akka_persistence_rs::EntityType;
 use akka_persistence_rs_commitlog::EventEnvelope as CommitLogEventEnvelope;
-use akka_projection_rs::SinkProvider;
+use akka_projection_rs::{handlers, SinkProvider};
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
 use akka_projection_rs_grpc::producer::{GrpcEventProducer, GrpcSinkProvider, Transformation};
 use akka_projection_rs_grpc::{OriginId, StreamId};
@@ -79,12 +79,13 @@ pub async fn task(
     };
 
     // Finally, start up a projection that will use Streambed storage
-    // to remember the offset consumed from the commit log. This then 
-    // permits us to restart from a specific point in the source given 
+    // to remember the offset consumed from the commit log. This then
+    // permits us to restart from a specific point in the source given
     // restarts.
     // A handler is formed from the gRPC producer. This handler will
     // call upon the transformer function to, in turn, produce the
-    // gRPC events to a remote consumer.
+    // gRPC events to a remote consumer. The handler is a "flowing" one
+    // where an upper limit of the number of envelopes in-flight is set.
 
     akka_projection_rs_storage::run(
         &secret_store,
@@ -92,7 +93,7 @@ pub async fn task(
         &state_storage_path,
         receiver,
         source_provider,
-        grpc_producer.handler(transformer),
+        handlers::flowing(grpc_producer.handler(transformer), 10),
         Duration::from_millis(100),
     )
     .await

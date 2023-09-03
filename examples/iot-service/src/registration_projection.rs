@@ -6,7 +6,7 @@ use akka_persistence_rs::EntityType;
 use akka_persistence_rs::Message;
 #[cfg(feature = "local")]
 use akka_persistence_rs_commitlog::EventEnvelope;
-use akka_projection_rs::{Handler, HandlerError};
+use akka_projection_rs::{handlers, Handler, HandlerError};
 #[cfg(feature = "local")]
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
 #[cfg(feature = "grpc")]
@@ -119,7 +119,7 @@ pub async fn task(
         &state_storage_path,
         receiver,
         source_provider,
-        handler,
+        handlers::sequential(handler),
         Duration::from_millis(100),
     )
     .await

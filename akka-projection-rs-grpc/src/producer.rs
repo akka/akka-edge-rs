@@ -1,15 +1,18 @@
 use akka_persistence_rs::EntityId;
 use akka_persistence_rs::EntityType;
 use akka_persistence_rs::PersistenceId;
-use akka_projection_rs::Handler;
+use akka_projection_rs::FlowingHandler;
 use akka_projection_rs::HandlerError;
 use akka_projection_rs::SinkProvider;
 use async_stream::stream;
 use async_trait::async_trait;
 use chrono::DateTime;
 use chrono::Utc;
+use futures::future;
 use prost::Message;
+use std::future::Future;
 use std::marker::PhantomData;
+use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
@@ -40,7 +43,7 @@ where
 }
 
 #[async_trait]
-impl<EI, E, F> Handler for GrpcEventProcessor<E, EI, F>
+impl<EI, E, F> FlowingHandler for GrpcEventProcessor<E, EI, F>
 where
     EI: Send,
     E: Send,
@@ -48,11 +51,21 @@ where
 {
     type Envelope = EI;
 
-    async fn process(&mut self, envelope: Self::Envelope) -> Result<(), HandlerError> {
+    async fn process_pending(
+        &mut self,
+        envelope: Self::Envelope,
+    ) -> Result<Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>>, HandlerError> {
         let Some(envelope) = (self.transformer)(envelope) else {
-            return Ok(());
+            return Ok(Box::pin(future::ready(Ok(()))));
         };
-        self.producer.process(envelope).await
+        let result = self.producer.process(envelope).await;
+        if let Ok(receiver_reply) = result {
+            Ok(Box::pin(async {
+                receiver_reply.await.map_err(|_| HandlerError)
+            }))
+        } else {
+            Err(HandlerError)
+        }
     }
 }
 
@@ -84,7 +97,10 @@ impl<E> GrpcEventProducer<E> {
         }
     }
 
-    async fn process(&mut self, transformation: Transformation<E>) -> Result<(), HandlerError> {
+    async fn process(
+        &mut self,
+        transformation: Transformation<E>,
+    ) -> Result<oneshot::Receiver<()>, HandlerError> {
         let (reply, reply_receiver) = oneshot::channel();
         let persistence_id = PersistenceId::new(self.entity_type.clone(), transformation.entity_id);
         self.grpc_producer
@@ -99,9 +115,8 @@ impl<E> GrpcEventProducer<E> {
             ))
             .await
             .map_err(|_| HandlerError)?;
-        reply_receiver.await.map_err(|_| HandlerError)?;
 
-        Ok(())
+        Ok(reply_receiver)
     }
 }
 

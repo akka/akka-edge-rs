@@ -3,7 +3,7 @@
 use std::{path::Path, time::Duration};
 
 use akka_persistence_rs::{Offset, WithOffset};
-use akka_projection_rs::{Handler, SourceProvider};
+use akka_projection_rs::{FlowingHandler, Handler, Handlers, SourceProvider};
 use log::error;
 use serde::{Deserialize, Serialize};
 use streambed::secret_store::SecretStore;
@@ -29,17 +29,18 @@ struct StorableState {
 /// the offset to storage. Therefore, high bursts of events are not
 /// slowed down by having to persist an offset to storage. This strategy
 /// works given the at-least-once semantics.
-pub async fn run<E, H, SP>(
+pub async fn run<A, B, E, SP>(
     secret_store: &impl SecretStore,
     secret_path: &str,
     state_storage_path: &Path,
     mut receiver: Receiver<Command>,
     mut source_provider: SP,
-    mut handler: H,
+    mut handler: Handlers<A, B>,
     min_save_offset_interval: Duration,
 ) where
+    A: Handler<Envelope = E> + Send,
+    B: FlowingHandler<Envelope = E> + Send,
     E: WithOffset,
-    H: Handler<Envelope = E>,
     SP: SourceProvider<Envelope = E>,
 {
     'outer: loop {
@@ -70,12 +71,24 @@ pub async fn run<E, H, SP>(
                 envelope = source.next() => {
                     if let Some(envelope) = envelope {
                         let offset = envelope.offset();
-                        if  handler.process(envelope).await.is_ok() {
-                            next_save_offset_interval = min_save_offset_interval;
-                            last_offset = Some(offset);
-                        } else {
-                            break;
+                        match &mut handler {
+                            Handlers::Sequential(handler, _) => {
+                                if handler.process(envelope).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Handlers::Flowing(handler, _, _) => {
+                                if let Ok(pending) = handler.process_pending(envelope).await {
+                                    if pending.await.is_err() {
+                                        break;
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
                         }
+                        next_save_offset_interval = min_save_offset_interval;
+                        last_offset = Some(offset);
                     } else {
                         break;
                     }
@@ -115,12 +128,12 @@ pub async fn run<E, H, SP>(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, env, fs, future::Future, pin::Pin};
+    use std::{collections::HashMap, env, fs, future::Future, marker::PhantomData, pin::Pin};
 
     use super::*;
     use akka_persistence_rs::EntityId;
     use akka_persistence_rs_commitlog::EventEnvelope;
-    use akka_projection_rs::HandlerError;
+    use akka_projection_rs::{HandlerError, UnusedFlowingHandler};
     use async_stream::stream;
     use async_trait::async_trait;
     use serde::Deserialize;
@@ -285,10 +298,15 @@ mod tests {
                     entity_id: entity_id.clone(),
                     event_value: event_value.clone(),
                 },
-                MyHandler {
-                    entity_id: entity_id.clone(),
-                    event_value: event_value.clone(),
-                },
+                Handlers::Sequential(
+                    MyHandler {
+                        entity_id: entity_id.clone(),
+                        event_value: event_value.clone(),
+                    },
+                    UnusedFlowingHandler {
+                        phantom: PhantomData,
+                    },
+                ),
                 MIN_SAVE_OFFSET_INTERVAL,
             )
             .await
