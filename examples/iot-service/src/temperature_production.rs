@@ -29,7 +29,7 @@ pub async fn task(
     state_storage_path: PathBuf,
 ) {
     // Establish a sink of envelopes that will be forwarded
-    // on to a consumer via gRPC producer handler.
+    // on to a consumer via gRPC event producer.
 
     let (grpc_producer, grpc_producer_receiver) = mpsc::channel(10);
 
@@ -59,7 +59,8 @@ pub async fn task(
         EntityType::from(temperature::EVENTS_TOPIC),
     );
 
-    // Transform events from the commit log to our gRPC producer.
+    // Optionally transform events from the commit log to values the
+    // gRPC producer understands.
 
     let transformer = |envelope: CommitLogEventEnvelope<temperature::Event>| {
         let temperature::Event::TemperatureRead { temperature } = envelope.event else {
@@ -78,8 +79,12 @@ pub async fn task(
     };
 
     // Finally, start up a projection that will use Streambed storage
-    // to remember the offset consumed. This then permits us to restart
-    // from a specific point in the source given restarts.
+    // to remember the offset consumed from the commit log. This then 
+    // permits us to restart from a specific point in the source given 
+    // restarts.
+    // A handler is formed from the gRPC producer. This handler will
+    // call upon the transformer function to, in turn, produce the
+    // gRPC events to a remote consumer.
 
     akka_projection_rs_storage::run(
         &secret_store,
