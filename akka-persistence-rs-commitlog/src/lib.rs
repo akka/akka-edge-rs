@@ -2,7 +2,7 @@
 
 use akka_persistence_rs::{
     entity_manager::{EventEnvelope as EntityManagerEventEnvelope, Handler, SourceProvider},
-    EntityId, Offset, WithEntityId, WithOffset,
+    EntityId, Offset, TimestampOffset, WithEntityId, WithOffset, WithTimestampOffset,
 };
 use async_stream::stream;
 use async_trait::async_trait;
@@ -55,6 +55,16 @@ impl<E> WithEntityId for EventEnvelope<E> {
 impl<E> WithOffset for EventEnvelope<E> {
     fn offset(&self) -> Offset {
         Offset::Sequence(self.offset)
+    }
+}
+
+impl<E> WithTimestampOffset for EventEnvelope<E> {
+    fn timestamp_offset(&self) -> TimestampOffset {
+        TimestampOffset {
+            timestamp: self.timestamp.unwrap_or_else(Utc::now),
+            // FIXME: Is this correct?
+            seen: vec![],
+        }
     }
 }
 

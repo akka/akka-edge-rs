@@ -1,7 +1,6 @@
 #![doc = include_str!("../README.md")]
 
-use akka_persistence_rs::{Offset, PersistenceId, WithOffset};
-use chrono::{DateTime, Utc};
+use akka_persistence_rs::{Offset, PersistenceId, TimestampOffset, WithOffset};
 use smol_str::SmolStr;
 
 pub mod consumer;
@@ -13,13 +12,12 @@ pub mod producer;
 pub struct EventEnvelope<E> {
     pub persistence_id: PersistenceId,
     pub event: E,
-    pub timestamp: DateTime<Utc>,
-    pub seen: Vec<(PersistenceId, u64)>,
+    pub offset: TimestampOffset,
 }
 
 impl<E> WithOffset for EventEnvelope<E> {
     fn offset(&self) -> Offset {
-        Offset::Timestamp(self.timestamp, self.seen.clone())
+        Offset::Timestamp(self.offset.clone())
     }
 }
 

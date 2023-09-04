@@ -1,16 +1,14 @@
 use akka_persistence_rs::EntityId;
 use akka_persistence_rs::EntityType;
-use akka_persistence_rs::Offset;
 use akka_persistence_rs::PersistenceId;
+use akka_persistence_rs::TimestampOffset;
 use akka_persistence_rs::WithEntityId;
-use akka_persistence_rs::WithOffset;
+use akka_persistence_rs::WithTimestampOffset;
 use akka_projection_rs::HandlerError;
 use akka_projection_rs::PendingHandler;
 use akka_projection_rs::SinkProvider;
 use async_stream::stream;
 use async_trait::async_trait;
-use chrono::DateTime;
-use chrono::Utc;
 use futures::future;
 use prost::Message;
 use std::collections::HashMap;
@@ -32,7 +30,7 @@ use crate::StreamId;
 /// passing data on to a gRPC producer.
 pub struct Transformation<E> {
     pub entity_id: EntityId,
-    pub timestamp: Option<DateTime<Utc>>,
+    pub offset: TimestampOffset,
     pub event: E,
 }
 
@@ -50,7 +48,7 @@ where
 #[async_trait]
 impl<EI, E, F> PendingHandler for GrpcEventProcessor<E, EI, F>
 where
-    EI: WithEntityId + WithOffset + Send,
+    EI: WithEntityId + WithTimestampOffset + Send,
     E: Send,
     F: Fn(&EI) -> Option<E> + Send,
 {
@@ -65,14 +63,9 @@ where
         let Some(event) = (self.transformer)(&envelope) else {
             return Ok(Box::pin(future::ready(Ok(()))));
         };
-        let timestamp = if let Offset::Timestamp(timestamp, _) = envelope.offset() {
-            Some(timestamp)
-        } else {
-            None
-        };
         let transformation = Transformation {
             entity_id: envelope.entity_id(),
-            timestamp,
+            offset: envelope.timestamp_offset(),
             event,
         };
         let result = self.producer.process(transformation).await;
@@ -125,8 +118,7 @@ impl<E> GrpcEventProducer<E> {
                 EventEnvelope {
                     persistence_id: persistence_id.clone(),
                     event: transformation.event,
-                    timestamp: transformation.timestamp.unwrap_or_else(Utc::now),
-                    seen: vec![],
+                    offset: transformation.offset,
                 },
                 reply,
             ))
@@ -215,8 +207,8 @@ where
                     let (seq_nr, _) = context.iter().last().unwrap();
 
                     let timestamp = prost_types::Timestamp {
-                        seconds: envelope.timestamp.timestamp(),
-                        nanos: envelope.timestamp.timestamp_nanos() as i32
+                        seconds: envelope.offset.timestamp.timestamp(),
+                        nanos: envelope.offset.timestamp.timestamp_nanos() as i32
                     };
 
                     yield proto::ConsumeEventIn {
@@ -316,8 +308,10 @@ mod tests {
                         // FIXME Flesh out these fields
                         persistence_id: "".parse().unwrap(),
                         event: 0,
-                        seen: vec![],
-                        timestamp: Utc::now(),
+                        offset: TimestampOffset {
+                            timestamp: Utc::now(),
+                            seen: vec![]
+                        }
                     },
                     reply,
                 ))

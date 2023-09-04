@@ -131,6 +131,12 @@ impl<C> Message<C> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct TimestampOffset {
+    pub timestamp: DateTime<Utc>,
+    pub seen: Vec<(PersistenceId, u64)>,
+}
+
 #[derive(Deserialize, Serialize)]
 pub enum Offset {
     /// Corresponds to an ordered sequence number for the events. Note that the corresponding
@@ -148,12 +154,17 @@ pub enum Offset {
     /// The `offset` is exclusive, i.e. the event with the exact same sequence number will not be included
     /// in the returned stream. This means that you can use the offset that is returned in `EventEnvelope`
     /// as the `offset` parameter in a subsequent query.
-    Timestamp(DateTime<Utc>, Vec<(PersistenceId, u64)>),
+    Timestamp(TimestampOffset),
 }
 
 /// Implemented by structures that can return an offset.
 pub trait WithOffset {
     fn offset(&self) -> Offset;
+}
+
+/// Implemented by structures that can return a timestamp offset.
+pub trait WithTimestampOffset {
+    fn timestamp_offset(&self) -> TimestampOffset;
 }
 
 #[cfg(test)]

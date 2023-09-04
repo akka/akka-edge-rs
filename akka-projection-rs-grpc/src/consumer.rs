@@ -1,5 +1,6 @@
 use akka_persistence_rs::Offset;
 use akka_persistence_rs::PersistenceId;
+use akka_persistence_rs::TimestampOffset;
 use akka_projection_rs::SourceProvider;
 use async_stream::stream;
 use async_trait::async_trait;
@@ -90,7 +91,7 @@ where
 
         if let Some(mut connection) = connection {
             let offset = offset().await.and_then(|offset| {
-                if let Offset::Timestamp(timestamp, seen) = offset {
+                if let Offset::Timestamp(TimestampOffset { timestamp, seen }) = offset {
                     Some(proto::Offset {
                         timestamp: Some(Timestamp {
                             seconds: timestamp.timestamp(),
@@ -128,6 +129,9 @@ where
                 Box::pin(stream! {
                     while let Some(Ok(proto::StreamOut{ message: Some(proto::stream_out::Message::Event(streamed_event)) })) = stream_outs.next().await {
                         let Some(payload) = streamed_event.payload else { continue };
+                        if !payload.type_url.starts_with("type.googleapis.com/") {
+                            break
+                        }
 
                         let Ok(persistence_id) = streamed_event.persistence_id.parse::<PersistenceId>() else { break };
                         let Some(offset) = streamed_event.offset else { break };
@@ -135,12 +139,10 @@ where
                         let Some(timestamp) = NaiveDateTime::from_timestamp_opt(timestamp.seconds, timestamp.nanos as u32) else { break };
                         let timestamp = Utc.from_utc_datetime(&timestamp);
                         let seen = offset.seen.iter().flat_map(|pis| pis.persistence_id.parse().ok().map(|pid|(pid, pis.seq_nr as u64))).collect();
+                        let offset = TimestampOffset { timestamp, seen };
 
-                        if !payload.type_url.starts_with("type.googleapis.com/") {
-                            break
-                        }
                         let Ok(event) = E::decode(Bytes::from(payload.value)) else { break };
-                        yield EventEnvelope {persistence_id, event, timestamp, seen};
+                        yield EventEnvelope {persistence_id, event, offset};
                     }
                 })
             } else {
@@ -275,7 +277,10 @@ mod tests {
             let task_event_seen_by = event_seen_by.clone();
             let mut source = source_provider
                 .source(|| async {
-                    Some(Offset::Timestamp(event_time, task_event_seen_by.clone()))
+                    Some(Offset::Timestamp(TimestampOffset {
+                        timestamp: event_time,
+                        seen: task_event_seen_by.clone(),
+                    }))
                 })
                 .await;
 
@@ -292,8 +297,10 @@ mod tests {
                 Some(EventEnvelope {
                     persistence_id,
                     event: 0xffffffff,
-                    timestamp: event_time,
-                    seen: event_seen_by,
+                    offset: TimestampOffset {
+                        timestamp: event_time,
+                        seen: event_seen_by,
+                    }
                 })
             );
 
