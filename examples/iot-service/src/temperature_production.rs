@@ -7,7 +7,7 @@ use akka_persistence_rs::EntityType;
 use akka_persistence_rs_commitlog::EventEnvelope as CommitLogEventEnvelope;
 use akka_projection_rs::SinkProvider;
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
-use akka_projection_rs_grpc::producer::{GrpcEventProducer, GrpcSinkProvider, Transformation};
+use akka_projection_rs_grpc::producer::{GrpcEventProducer, GrpcSinkProvider};
 use akka_projection_rs_grpc::{OriginId, StreamId};
 use akka_projection_rs_storage::Command;
 use std::sync::Arc;
@@ -59,10 +59,10 @@ pub async fn task(
         EntityType::from(temperature::EVENTS_TOPIC),
     );
 
-    // Optionally transform events from the commit log to values the
+    // Optionally transform events from the commit log to an event the
     // gRPC producer understands.
 
-    let transformer = |envelope: CommitLogEventEnvelope<temperature::Event>| {
+    let transformer = |envelope: &CommitLogEventEnvelope<temperature::Event>| {
         let temperature::Event::TemperatureRead { temperature } = envelope.event else {
             return None;
         };
@@ -71,11 +71,7 @@ pub async fn task(
             temperature: temperature as i32,
         };
 
-        Some(Transformation {
-            entity_id: envelope.entity_id,
-            timestamp: envelope.timestamp,
-            event,
-        })
+        Some(event)
     };
 
     // Finally, start up a projection that will use Streambed storage

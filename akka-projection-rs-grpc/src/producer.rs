@@ -1,6 +1,9 @@
 use akka_persistence_rs::EntityId;
 use akka_persistence_rs::EntityType;
+use akka_persistence_rs::Offset;
 use akka_persistence_rs::PersistenceId;
+use akka_persistence_rs::WithEntityId;
+use akka_persistence_rs::WithOffset;
 use akka_projection_rs::HandlerError;
 use akka_projection_rs::PendingHandler;
 use akka_projection_rs::SinkProvider;
@@ -37,7 +40,7 @@ pub struct Transformation<E> {
 /// to then pass on to a gRPC event producer.
 pub struct GrpcEventProcessor<E, EI, F>
 where
-    F: Fn(EI) -> Option<Transformation<E>>,
+    F: Fn(&EI) -> Option<E>,
 {
     producer: GrpcEventProducer<E>,
     transformer: F,
@@ -47,9 +50,9 @@ where
 #[async_trait]
 impl<EI, E, F> PendingHandler for GrpcEventProcessor<E, EI, F>
 where
-    EI: Send,
+    EI: WithEntityId + WithOffset + Send,
     E: Send,
-    F: Fn(EI) -> Option<Transformation<E>> + Send,
+    F: Fn(&EI) -> Option<E> + Send,
 {
     type Envelope = EI;
 
@@ -59,10 +62,20 @@ where
         &mut self,
         envelope: Self::Envelope,
     ) -> Result<Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>>, HandlerError> {
-        let Some(envelope) = (self.transformer)(envelope) else {
+        let Some(event) = (self.transformer)(&envelope) else {
             return Ok(Box::pin(future::ready(Ok(()))));
         };
-        let result = self.producer.process(envelope).await;
+        let timestamp = if let Offset::Timestamp(timestamp, _) = envelope.offset() {
+            Some(timestamp)
+        } else {
+            None
+        };
+        let transformation = Transformation {
+            entity_id: envelope.entity_id(),
+            timestamp,
+            event,
+        };
+        let result = self.producer.process(transformation).await;
         if let Ok(receiver_reply) = result {
             Ok(Box::pin(async {
                 receiver_reply.await.map_err(|_| HandlerError)
@@ -92,7 +105,7 @@ impl<E> GrpcEventProducer<E> {
 
     pub fn handler<EI, F>(self, transformer: F) -> GrpcEventProcessor<E, EI, F>
     where
-        F: Fn(EI) -> Option<Transformation<E>>,
+        F: Fn(&EI) -> Option<E>,
     {
         GrpcEventProcessor {
             producer: self,

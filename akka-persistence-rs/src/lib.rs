@@ -20,6 +20,11 @@ pub type EntityType = smol_str::SmolStr;
 /// Uniquely identifies an entity, or entity instance.
 pub type EntityId = smol_str::SmolStr;
 
+/// Implemented by structures that can return an entity id.
+pub trait WithEntityId {
+    fn entity_id(&self) -> EntityId;
+}
+
 /// A slice is deterministically defined based on the persistence id.
 /// `NUMBER_OF_SLICES` is not configurable because changing the value would result in
 /// different slice for a persistence id than what was used before, which would

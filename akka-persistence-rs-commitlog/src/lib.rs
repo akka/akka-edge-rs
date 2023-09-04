@@ -2,7 +2,7 @@
 
 use akka_persistence_rs::{
     entity_manager::{EventEnvelope as EntityManagerEventEnvelope, Handler, SourceProvider},
-    EntityId, Offset, WithOffset,
+    EntityId, Offset, WithEntityId, WithOffset,
 };
 use async_stream::stream;
 use async_trait::async_trait;
@@ -43,6 +43,12 @@ impl<E> EventEnvelope<E> {
             event,
             offset,
         }
+    }
+}
+
+impl<E> WithEntityId for EventEnvelope<E> {
+    fn entity_id(&self) -> EntityId {
+        self.entity_id.clone()
     }
 }
 
