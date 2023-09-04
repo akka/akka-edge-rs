@@ -15,7 +15,7 @@ where
     A: Handler,
     B: PendingHandler,
 {
-    Completed(A, B),
+    Ready(A, B),
     Pending(B, A),
 }
 
@@ -25,7 +25,7 @@ where
     E: Send,
 {
     fn from(handler: A) -> Self {
-        Handlers::Completed(
+        Handlers::Ready(
             handler,
             UnusedFlowingHandler {
                 phantom: PhantomData,
@@ -87,6 +87,9 @@ pub trait PendingHandler {
     /// The envelope processed by the handler.
     type Envelope: Send;
 
+    /// The maximum number of envelopes that can be pending at any time.
+    const MAX_PENDING: usize;
+
     /// Process an envelope with a pending result.
     /// A handler's result is "pending" when envelopes can be passed through and the
     /// result of processing one is not immediately known. Meanwhile, more
@@ -108,6 +111,8 @@ where
     E: Send,
 {
     type Envelope = E;
+
+    const MAX_PENDING: usize = 0;
 
     async fn process_pending(
         &mut self,

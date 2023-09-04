@@ -51,6 +51,8 @@ where
 {
     type Envelope = EI;
 
+    const MAX_PENDING: usize = 10;
+
     async fn process_pending(
         &mut self,
         envelope: Self::Envelope,
