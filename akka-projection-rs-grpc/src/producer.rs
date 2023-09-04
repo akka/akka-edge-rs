@@ -10,6 +10,8 @@ use chrono::DateTime;
 use chrono::Utc;
 use futures::future;
 use prost::Message;
+use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -186,15 +188,39 @@ where
                     )),
                 };
 
-                while let Some(_envelope) = envelopes.recv().await {
+                let ordinary_events_source = smol_str::SmolStr::from("");
+
+                let mut in_flight: HashMap<PersistenceId, VecDeque<(u64, oneshot::Sender<()>)>> = HashMap::new();
+
+                while let Some((envelope, reply_to)) = envelopes.recv().await {
+                    let context = in_flight.entry(envelope.persistence_id.clone())
+                        .and_modify(|contexts| {
+                            let seq_nr = contexts.iter().last().map(|(seq_nr, _)| seq_nr.wrapping_add(1)).unwrap_or(0);
+                            contexts.push_back((seq_nr, reply_to))
+                        })
+                        .or_default();
+                    let (seq_nr, _) = context.iter().last().unwrap();
+
+                    let timestamp = prost_types::Timestamp {
+                        seconds: envelope.timestamp.timestamp(),
+                        nanos: envelope.timestamp.timestamp_nanos() as i32
+                    };
+
                     yield proto::ConsumeEventIn {
                         message: Some(proto::consume_event_in::Message::Event(
-                            // FIXME Place the correct field values
-                            proto::Event { persistence_id: String::from(""), seq_nr: 0, slice: 0, offset: None, payload: None, source: String::from(""), metadata: None, tags: vec![] },
+                            proto::Event {
+                                persistence_id: envelope.persistence_id.to_string(),
+                                seq_nr: *seq_nr as i64,
+                                slice: envelope.persistence_id.slice() as i32,
+                                offset: Some(proto::Offset { timestamp: Some(timestamp), seen: vec![] }),
+                                payload: None,
+                                source: ordinary_events_source.to_string(),
+                                metadata: None,
+                                tags: vec![]
+                            },
                         )),
                     };
                 }
-
             });
             let result = connection.consume_event(request).await;
             if let Ok(response) = result {
