@@ -166,6 +166,7 @@ mod tests {
     use akka_projection_rs::HandlerError;
     use async_stream::stream;
     use async_trait::async_trait;
+    use chrono::Utc;
     use serde::Deserialize;
     use streambed::secret_store::{
         AppRoleAuthReply, Error, GetSecretReply, SecretData, SecretStore, UserPassAuthReply,
@@ -268,7 +269,7 @@ mod tests {
         {
             Box::pin(stream! {
                 if offset().await.is_none() {
-                    yield EventEnvelope::new(self.entity_id.clone(), None, MyEvent { value:self.event_value.clone() }, 0);
+                    yield EventEnvelope::new(self.entity_id.clone(), Utc::now(), MyEvent { value:self.event_value.clone() }, 0);
                 }
             }.chain(stream::pending()))
         }
@@ -285,15 +286,11 @@ mod tests {
 
         /// Process an envelope.
         async fn process(&mut self, envelope: Self::Envelope) -> Result<(), HandlerError> {
+            assert_eq!(envelope.entity_id, self.entity_id);
             assert_eq!(
-                envelope,
-                EventEnvelope {
-                    entity_id: self.entity_id.clone(),
-                    timestamp: None,
-                    event: MyEvent {
-                        value: self.event_value.clone()
-                    },
-                    offset: 0
+                envelope.event,
+                MyEvent {
+                    value: self.event_value.clone()
                 }
             );
             Ok(())
@@ -317,15 +314,11 @@ mod tests {
             envelope: Self::Envelope,
         ) -> Result<Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>>, HandlerError>
         {
+            assert_eq!(envelope.entity_id, self.entity_id);
             assert_eq!(
-                envelope,
-                EventEnvelope {
-                    entity_id: self.entity_id.clone(),
-                    timestamp: None,
-                    event: MyEvent {
-                        value: self.event_value.clone()
-                    },
-                    offset: 0
+                envelope.event,
+                MyEvent {
+                    value: self.event_value.clone()
                 }
             );
             Ok(Box::pin(future::ready(Ok(()))))

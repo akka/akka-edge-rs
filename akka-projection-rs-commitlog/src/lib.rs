@@ -143,6 +143,7 @@ mod tests {
 
     use super::*;
     use akka_persistence_rs::EntityId;
+    use chrono::Utc;
     use serde::Deserialize;
     use streambed::{
         commit_log::{ConsumerRecord, Header, Key, ProducerRecord},
@@ -251,9 +252,9 @@ mod tests {
         ) -> Option<EventEnvelope<MyEvent>> {
             let value = String::from_utf8(record.value).ok()?;
             let event = MyEvent { value };
-            Some(EventEnvelope {
+            record.timestamp.map(|timestamp| EventEnvelope {
                 entity_id,
-                timestamp: record.timestamp,
+                timestamp,
                 event,
                 offset: 0,
             })
@@ -272,7 +273,7 @@ mod tests {
             Some(ProducerRecord {
                 topic,
                 headers,
-                timestamp: None,
+                timestamp: Some(Utc::now()),
                 key: 0,
                 value: event.value.clone().into_bytes(),
                 partition: 0,
@@ -305,7 +306,7 @@ mod tests {
         let record = ProducerRecord {
             topic: topic.clone(),
             headers,
-            timestamp: None,
+            timestamp: Some(Utc::now()),
             key: 0,
             value: event_value.clone().into_bytes(),
             partition: 0,
@@ -323,14 +324,9 @@ mod tests {
         );
 
         let mut envelopes = source_provider.source(|| async { None }).await;
-        assert_eq!(
-            envelopes.next().await,
-            Some(EventEnvelope::new(
-                entity_id,
-                None,
-                MyEvent { value: event_value },
-                0
-            ))
-        );
+        let envelope = envelopes.next().await.unwrap();
+
+        assert_eq!(envelope.entity_id, entity_id,);
+        assert_eq!(envelope.event, MyEvent { value: event_value },);
     }
 }

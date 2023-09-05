@@ -6,6 +6,8 @@
 //! The entities will recover their state from a stream of events.
 
 use async_trait::async_trait;
+use chrono::DateTime;
+use chrono::Utc;
 use lru::LruCache;
 use std::io;
 use std::num::NonZeroUsize;
@@ -25,10 +27,11 @@ pub struct EventEnvelope<E> {
     pub deletion_event: bool,
     pub entity_id: EntityId,
     pub event: E,
+    pub timestamp: DateTime<Utc>,
 }
 
 impl<E> EventEnvelope<E> {
-    pub fn new<EI>(entity_id: EI, event: E) -> Self
+    pub fn new<EI>(entity_id: EI, timestamp: DateTime<Utc>, event: E) -> Self
     where
         EI: Into<EntityId>,
     {
@@ -36,6 +39,7 @@ impl<E> EventEnvelope<E> {
             deletion_event: false,
             entity_id: entity_id.into(),
             event,
+            timestamp,
         }
     }
 }
@@ -362,8 +366,12 @@ mod tests {
         let (temp_sensor_events, mut temp_sensor_events_captured) = mpsc::channel(4);
         let temp_sensor_event_adapter = VecEventEnvelopeAdapter {
             initial_events: Some(vec![
-                EventEnvelope::new("id-1", TempEvent::Registered),
-                EventEnvelope::new("id-1", TempEvent::TemperatureUpdated { temp: 10 }),
+                EventEnvelope::new("id-1", Utc::now(), TempEvent::Registered),
+                EventEnvelope::new(
+                    "id-1",
+                    Utc::now(),
+                    TempEvent::TemperatureUpdated { temp: 10 },
+                ),
             ]),
             captured_events: temp_sensor_events,
         };
@@ -456,26 +464,21 @@ mod tests {
 
         // We now consume our entity manager as a source of events.
 
-        assert_eq!(
-            temp_sensor_events_captured.recv().await.unwrap(),
-            EventEnvelope::new("id-1", TempEvent::TemperatureUpdated { temp: 32 })
-        );
-        assert_eq!(
-            temp_sensor_events_captured.recv().await.unwrap(),
-            EventEnvelope::new("id-1", TempEvent::TemperatureUpdated { temp: 64 })
-        );
-        assert_eq!(
-            temp_sensor_events_captured.recv().await.unwrap(),
-            EventEnvelope {
-                entity_id: EntityId::from("id-1"),
-                event: TempEvent::Deregistered,
-                deletion_event: true
-            }
-        );
-        assert_eq!(
-            temp_sensor_events_captured.recv().await.unwrap(),
-            EventEnvelope::new("id-2", TempEvent::Registered)
-        );
+        let envelope = temp_sensor_events_captured.recv().await.unwrap();
+        assert_eq!(envelope.entity_id, EntityId::from("id-1"));
+        assert_eq!(envelope.event, TempEvent::TemperatureUpdated { temp: 32 });
+
+        let envelope = temp_sensor_events_captured.recv().await.unwrap();
+        assert_eq!(envelope.event, TempEvent::TemperatureUpdated { temp: 64 });
+
+        let envelope = temp_sensor_events_captured.recv().await.unwrap();
+        assert!(envelope.deletion_event,);
+        assert_eq!(envelope.event, TempEvent::Deregistered,);
+
+        let envelope = temp_sensor_events_captured.recv().await.unwrap();
+        assert_eq!(envelope.entity_id, EntityId::from("id-2"));
+        assert_eq!(envelope.event, TempEvent::Registered);
+
         assert!(temp_sensor_events_captured.recv().await.is_none());
     }
 }

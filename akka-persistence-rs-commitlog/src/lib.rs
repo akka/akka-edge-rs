@@ -22,7 +22,7 @@ use tokio_stream::{Stream, StreamExt};
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventEnvelope<E> {
     pub entity_id: EntityId,
-    pub timestamp: Option<DateTime<Utc>>,
+    pub timestamp: DateTime<Utc>,
     pub event: E,
     pub offset: CommitLogOffset,
 }
@@ -30,7 +30,7 @@ pub struct EventEnvelope<E> {
 impl<E> EventEnvelope<E> {
     pub fn new<EI>(
         entity_id: EI,
-        timestamp: Option<DateTime<Utc>>,
+        timestamp: DateTime<Utc>,
         event: E,
         offset: CommitLogOffset,
     ) -> Self
@@ -61,7 +61,7 @@ impl<E> WithOffset for EventEnvelope<E> {
 impl<E> WithTimestampOffset for EventEnvelope<E> {
     fn timestamp_offset(&self) -> TimestampOffset {
         TimestampOffset {
-            timestamp: self.timestamp.unwrap_or_else(Utc::now),
+            timestamp: self.timestamp,
             // FIXME: Is this correct?
             seen: vec![],
         }
@@ -106,7 +106,11 @@ where
             |value| ciborium::de::from_reader(value),
         )
         .await
-        .map(|event| EventEnvelope::new(entity_id, record.timestamp, event, record.offset))
+        .and_then(|event| {
+            record
+                .timestamp
+                .map(|timestamp| EventEnvelope::new(entity_id, timestamp, event, record.offset))
+        })
     }
 
     #[cfg(not(feature = "cbor"))]
@@ -226,6 +230,7 @@ where
                         {
                             yield EntityManagerEventEnvelope::new(
                                 envelope.entity_id,
+                                envelope.timestamp,
                                 envelope.event,
                             );
                         }
@@ -261,6 +266,7 @@ where
                             {
                                 yield EntityManagerEventEnvelope::new(
                                     envelope.entity_id,
+                                    envelope.timestamp,
                                     envelope.event,
                                 );
                             }
@@ -483,9 +489,9 @@ mod tests {
         ) -> Option<EventEnvelope<MyEvent>> {
             let value = String::from_utf8(record.value).ok()?;
             let event = MyEvent { value };
-            Some(EventEnvelope {
+            record.timestamp.map(|timestamp| EventEnvelope {
                 entity_id,
-                timestamp: record.timestamp,
+                timestamp,
                 event,
                 offset: 0,
             })
@@ -504,7 +510,7 @@ mod tests {
             Some(ProducerRecord {
                 topic,
                 headers,
-                timestamp: None,
+                timestamp: Some(Utc::now()),
                 key: 0,
                 value: event.value.clone().into_bytes(),
                 partition: 0,
@@ -534,6 +540,7 @@ mod tests {
         // Scaffolding
 
         let entity_id = EntityId::from("some-entity");
+        let timestamp = Utc::now();
 
         // Produce a stream given no prior persistence. Should return an empty stream.
 
@@ -547,6 +554,7 @@ mod tests {
         let envelope = adapter
             .process(EntityManagerEventEnvelope::new(
                 entity_id.clone(),
+                timestamp,
                 MyEvent {
                     value: "first-event".to_string(),
                 },
@@ -558,6 +566,7 @@ mod tests {
         let envelope = adapter
             .process(EntityManagerEventEnvelope::new(
                 entity_id.clone(),
+                timestamp,
                 MyEvent {
                     value: "second-event".to_string(),
                 },
@@ -571,6 +580,7 @@ mod tests {
         adapter
             .process(EntityManagerEventEnvelope::new(
                 "some-other-entity-id",
+                timestamp,
                 MyEvent {
                     value: "third-event".to_string(),
                 },

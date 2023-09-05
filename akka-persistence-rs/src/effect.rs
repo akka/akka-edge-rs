@@ -2,6 +2,7 @@
 //! of an entity. Effects can be chained with other effects.
 
 use async_trait::async_trait;
+use chrono::Utc;
 use lru::LruCache;
 use std::{future::Future, io, marker::PhantomData};
 use tokio::sync::oneshot;
@@ -153,6 +154,7 @@ where
             if let Some(event) = self.event.take() {
                 let envelope = EventEnvelope {
                     entity_id: entity_id.clone(),
+                    timestamp: Utc::now(),
                     event,
                     deletion_event: self.deletion_event,
                 };
