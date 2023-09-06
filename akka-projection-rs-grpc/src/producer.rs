@@ -298,7 +298,7 @@ mod tests {
                 .unwrap();
         });
 
-        let mut flow_provider = GrpcSinkProvider::<u32>::new(
+        let mut flow_provider = GrpcSinkProvider::<prost_types::Duration>::new(
             "http://127.0.0.1:50051".parse().unwrap(),
             OriginId::from("some-origin-id"),
             StreamId::from("some-stream-id"),
@@ -317,7 +317,10 @@ mod tests {
                         // FIXME Flesh out these fields
                         persistence_id: "".parse().unwrap(),
                         seq_nr: 1,
-                        event: 0,
+                        event: prost_types::Duration {
+                            seconds: 0,
+                            nanos: 0
+                        },
                         offset: TimestampOffset {
                             timestamp: Utc::now(),
                             seen: vec![]
