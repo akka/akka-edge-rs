@@ -11,7 +11,7 @@ use akka_projection_rs::SinkProvider;
 use async_stream::stream;
 use async_trait::async_trait;
 use futures::future;
-use prost::Message;
+use prost::{Message, Name};
 use prost_types::Any;
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -160,11 +160,14 @@ impl<E> GrpcSinkProvider<E> {
 #[async_trait]
 impl<E> SinkProvider for GrpcSinkProvider<E>
 where
-    E: Message + Send + Sync + 'static,
+    E: Message + Name + Send + Sync + 'static,
 {
     type Envelope = EventEnvelope<E>;
 
     async fn sink(&mut self, mut envelopes: mpsc::Receiver<(Self::Envelope, oneshot::Sender<()>)>) {
+        // FIXME we want to select on the receiver and the stream response. And then keep going round. This
+        // task shouldn't die unless there are no more elements to receive.
+
         let connection = if let Ok(connection) =
             proto::event_consumer_service_client::EventConsumerServiceClient::connect(
                 self.event_consumer_addr.clone(),
@@ -215,8 +218,7 @@ where
                         nanos: envelope.offset.timestamp.timestamp_nanos() as i32
                     };
 
-                    let mut value = Vec::new();
-                    if  envelope.event.encode(&mut value).is_ok() {
+                    if let Ok(any) = Any::from_msg(&envelope.event) {
                         yield proto::ConsumeEventIn {
                             message: Some(proto::consume_event_in::Message::Event(
                                 proto::Event {
@@ -224,12 +226,7 @@ where
                                     seq_nr: *seq_nr as i64,
                                     slice: envelope.persistence_id.slice() as i32,
                                     offset: Some(proto::Offset { timestamp: Some(timestamp), seen: vec![] }),
-                                    payload: Some(Any {
-                                        type_url: String::from(
-                                            "type.googleapis.com/google.protobuf.Any",
-                                        ),
-                                        value,
-                                    }),
+                                    payload: Some(any),
                                     source: ordinary_events_source.to_string(),
                                     metadata: None,
                                     tags: vec![]
