@@ -3,6 +3,7 @@ use akka_persistence_rs::EntityType;
 use akka_persistence_rs::PersistenceId;
 use akka_persistence_rs::TimestampOffset;
 use akka_persistence_rs::WithEntityId;
+use akka_persistence_rs::WithSeqNr;
 use akka_persistence_rs::WithTimestampOffset;
 use akka_projection_rs::HandlerError;
 use akka_projection_rs::PendingHandler;
@@ -11,6 +12,7 @@ use async_stream::stream;
 use async_trait::async_trait;
 use futures::future;
 use prost::Message;
+use prost_types::Any;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -30,6 +32,7 @@ use crate::StreamId;
 /// passing data on to a gRPC producer.
 pub struct Transformation<E> {
     pub entity_id: EntityId,
+    pub seq_nr: u64,
     pub offset: TimestampOffset,
     pub event: E,
 }
@@ -48,7 +51,7 @@ where
 #[async_trait]
 impl<EI, E, F> PendingHandler for GrpcEventProcessor<E, EI, F>
 where
-    EI: WithEntityId + WithTimestampOffset + Send,
+    EI: WithEntityId + WithSeqNr + WithTimestampOffset + Send,
     E: Send,
     F: Fn(&EI) -> Option<E> + Send,
 {
@@ -65,6 +68,7 @@ where
         };
         let transformation = Transformation {
             entity_id: envelope.entity_id(),
+            seq_nr: envelope.seq_nr(),
             offset: envelope.timestamp_offset(),
             event,
         };
@@ -117,6 +121,7 @@ impl<E> GrpcEventProducer<E> {
             .send((
                 EventEnvelope {
                     persistence_id: persistence_id.clone(),
+                    seq_nr: transformation.seq_nr,
                     event: transformation.event,
                     offset: transformation.offset,
                 },
@@ -200,8 +205,7 @@ where
                 while let Some((envelope, reply_to)) = envelopes.recv().await {
                     let context = in_flight.entry(envelope.persistence_id.clone())
                         .and_modify(|contexts| {
-                            let seq_nr = contexts.iter().last().map(|(seq_nr, _)| seq_nr.wrapping_add(1)).unwrap_or(0);
-                            contexts.push_back((seq_nr, reply_to))
+                            contexts.push_back((envelope.seq_nr, reply_to));
                         })
                         .or_default();
                     let (seq_nr, _) = context.iter().last().unwrap();
@@ -211,27 +215,35 @@ where
                         nanos: envelope.offset.timestamp.timestamp_nanos() as i32
                     };
 
-                    yield proto::ConsumeEventIn {
-                        message: Some(proto::consume_event_in::Message::Event(
-                            proto::Event {
-                                persistence_id: envelope.persistence_id.to_string(),
-                                seq_nr: *seq_nr as i64,
-                                slice: envelope.persistence_id.slice() as i32,
-                                offset: Some(proto::Offset { timestamp: Some(timestamp), seen: vec![] }),
-                                payload: None,
-                                source: ordinary_events_source.to_string(),
-                                metadata: None,
-                                tags: vec![]
-                            },
-                        )),
-                    };
+                    let mut value = Vec::new();
+                    if  envelope.event.encode(&mut value).is_ok() {
+                        yield proto::ConsumeEventIn {
+                            message: Some(proto::consume_event_in::Message::Event(
+                                proto::Event {
+                                    persistence_id: envelope.persistence_id.to_string(),
+                                    seq_nr: *seq_nr as i64,
+                                    slice: envelope.persistence_id.slice() as i32,
+                                    offset: Some(proto::Offset { timestamp: Some(timestamp), seen: vec![] }),
+                                    payload: Some(Any {
+                                        type_url: String::from(
+                                            "type.googleapis.com/google.protobuf.Any",
+                                        ),
+                                        value,
+                                    }),
+                                    source: ordinary_events_source.to_string(),
+                                    metadata: None,
+                                    tags: vec![]
+                                },
+                            )),
+                        };
+                    }
                 }
             });
             let result = connection.consume_event(request).await;
             if let Ok(response) = result {
                 let mut stream_outs = response.into_inner();
                 if let Some(Ok(proto::ConsumeEventOut {
-                    message: Some(proto::consume_event_out::Message::Start { .. }),
+                    message: Some(proto::consume_event_out::Message::Ack { .. }),
                 })) = stream_outs.next().await
                 {
                     // FIXME: if the ack info lines up with what we're expecting then reply to the associated oneshot.
@@ -307,6 +319,7 @@ mod tests {
                     EventEnvelope {
                         // FIXME Flesh out these fields
                         persistence_id: "".parse().unwrap(),
+                        seq_nr: 1,
                         event: 0,
                         offset: TimestampOffset {
                             timestamp: Utc::now(),

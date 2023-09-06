@@ -117,7 +117,6 @@ where
                         slice_min: self.slice_range.start as i32,
                         slice_max: self.slice_range.end as i32 - 1,
                         offset,
-                        // FIXME filters
                         filter: vec![],
                     })),
                 }])
@@ -134,6 +133,11 @@ where
                         }
 
                         let Ok(persistence_id) = streamed_event.persistence_id.parse::<PersistenceId>() else { break };
+
+                        let seq_nr = streamed_event.seq_nr as u64;
+
+                        let Ok(event) = E::decode(Bytes::from(payload.value)) else { break };
+
                         let Some(offset) = streamed_event.offset else { break };
                         let Some(timestamp) = offset.timestamp else { break };
                         let Some(timestamp) = NaiveDateTime::from_timestamp_opt(timestamp.seconds, timestamp.nanos as u32) else { break };
@@ -141,8 +145,7 @@ where
                         let seen = offset.seen.iter().flat_map(|pis| pis.persistence_id.parse().ok().map(|pid|(pid, pis.seq_nr as u64))).collect();
                         let offset = TimestampOffset { timestamp, seen };
 
-                        let Ok(event) = E::decode(Bytes::from(payload.value)) else { break };
-                        yield EventEnvelope {persistence_id, event, offset};
+                        yield EventEnvelope {persistence_id, seq_nr, event, offset};
                     }
                 })
             } else {
@@ -190,7 +193,7 @@ mod tests {
                 yield Ok(proto::StreamOut {
                     message: Some(proto::stream_out::Message::Event(proto::Event {
                         persistence_id: "entity-type|entity-id".to_string(),
-                        seq_nr: 0,
+                        seq_nr: 1,
                         slice: 0,
                         offset: Some(proto::Offset {
                             timestamp: Some(Timestamp {
@@ -296,6 +299,7 @@ mod tests {
                 envelope,
                 Some(EventEnvelope {
                     persistence_id,
+                    seq_nr: 1,
                     event: 0xffffffff,
                     offset: TimestampOffset {
                         timestamp: event_time,

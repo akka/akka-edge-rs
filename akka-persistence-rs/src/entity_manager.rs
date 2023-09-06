@@ -26,12 +26,13 @@ pub struct EventEnvelope<E> {
     /// as one that represents an entity instance being deleted.
     pub deletion_event: bool,
     pub entity_id: EntityId,
+    pub seq_nr: u64,
     pub event: E,
     pub timestamp: DateTime<Utc>,
 }
 
 impl<E> EventEnvelope<E> {
-    pub fn new<EI>(entity_id: EI, timestamp: DateTime<Utc>, event: E) -> Self
+    pub fn new<EI>(entity_id: EI, seq_nr: u64, timestamp: DateTime<Utc>, event: E) -> Self
     where
         EI: Into<EntityId>,
     {
@@ -39,6 +40,7 @@ impl<E> EventEnvelope<E> {
             deletion_event: false,
             entity_id: entity_id.into(),
             event,
+            seq_nr,
             timestamp,
         }
     }
@@ -74,6 +76,14 @@ pub trait Handler<E> {
     async fn process(&mut self, envelope: EventEnvelope<E>) -> io::Result<EventEnvelope<E>>;
 }
 
+/// An opaque type internal to the library. The type records the public and private
+/// state of an entity in the context of the entity manager and friends.
+#[derive(Default)]
+pub struct EntityStatus<S> {
+    pub(crate) state: S,
+    pub(crate) last_seq_nr: u64,
+}
+
 /// Manages the lifecycle of entities given a specific behavior.
 /// Entity managers are established given a source of events associated
 /// with an entity type. That source is consumed by subsequently telling
@@ -102,9 +112,11 @@ pub async fn run<A, B>(
         while let Some(envelope) = envelopes.next().await {
             update_entity::<B>(&mut entities, envelope);
         }
-        for (entity_id, state) in entities.iter() {
+        for (entity_id, entity_status) in entities.iter() {
             let context = Context { entity_id };
-            behavior.on_recovery_completed(&context, state).await;
+            behavior
+                .on_recovery_completed(&context, &entity_status.state)
+                .await;
         }
     } else {
         // A problem sourcing initial events is regarded as fatal.
@@ -116,20 +128,25 @@ pub async fn run<A, B>(
     while let Some(message) = receiver.recv().await {
         // Source entity if we don't have it.
 
-        let mut state = entities.get(&message.entity_id);
+        let mut entity_status = entities.get(&message.entity_id);
 
-        if state.is_none() {
+        if entity_status.is_none() {
             if let Ok(envelopes) = adapter.source(&message.entity_id).await {
                 tokio::pin!(envelopes);
                 while let Some(envelope) = envelopes.next().await {
                     update_entity::<B>(&mut entities, envelope);
                 }
-                state = entities.get(&message.entity_id);
+                entity_status = entities.get(&message.entity_id);
                 let context = Context {
                     entity_id: &message.entity_id,
                 };
                 behavior
-                    .on_recovery_completed(&context, state.unwrap_or(&B::State::default()))
+                    .on_recovery_completed(
+                        &context,
+                        &entity_status
+                            .unwrap_or(&EntityStatus::<B::State>::default())
+                            .state,
+                    )
                     .await;
             } else {
                 continue;
@@ -142,17 +159,23 @@ pub async fn run<A, B>(
         let context = Context {
             entity_id: &message.entity_id,
         };
-        let mut effect = B::for_command(
-            &context,
-            state.unwrap_or(&B::State::default()),
-            message.command,
-        );
+        let (mut effect, mut last_seq_nr) = if let Some(entity_status) = entity_status {
+            let effect = B::for_command(&context, &entity_status.state, message.command);
+            let last_seq_nr = entity_status.last_seq_nr;
+            (effect, last_seq_nr)
+        } else {
+            let entity_status = EntityStatus::<B::State>::default();
+            let effect = B::for_command(&context, &entity_status.state, message.command);
+            let last_seq_nr = entity_status.last_seq_nr;
+            (effect, last_seq_nr)
+        };
         let result = effect
             .process(
                 &behavior,
                 &mut adapter,
                 &mut entities,
                 context.entity_id,
+                &mut last_seq_nr,
                 Ok(()),
                 &mut |entities, envelope| update_entity::<B>(entities, envelope),
             )
@@ -163,7 +186,10 @@ pub async fn run<A, B>(
     }
 }
 
-fn update_entity<B>(entities: &mut LruCache<EntityId, B::State>, envelope: EventEnvelope<B::Event>)
+fn update_entity<B>(
+    entities: &mut LruCache<EntityId, EntityStatus<B::State>>,
+    envelope: EventEnvelope<B::Event>,
+) -> u64
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
     B::State: Default,
@@ -173,18 +199,26 @@ where
         let context = Context {
             entity_id: &envelope.entity_id,
         };
-        let state = if let Some(state) = entities.get_mut(&envelope.entity_id) {
-            state
+        let entity_state = if let Some(entity_state) = entities.get_mut(&envelope.entity_id) {
+            entity_state.last_seq_nr = envelope.seq_nr;
+            entity_state
         } else {
             // We're avoiding the use of get_or_insert so that we can avoid
             // cloning the entity id unless necessary.
-            entities.push(envelope.entity_id.clone(), B::State::default());
+            entities.push(
+                envelope.entity_id.clone(),
+                EntityStatus::<B::State> {
+                    state: B::State::default(),
+                    last_seq_nr: envelope.seq_nr,
+                },
+            );
             entities.get_mut(&envelope.entity_id).unwrap()
         };
-        B::on_event(&context, state, envelope.event);
+        B::on_event(&context, &mut entity_state.state, envelope.event);
     } else {
         entities.pop(&envelope.entity_id);
     }
+    envelope.seq_nr
 }
 
 #[cfg(test)]
@@ -366,9 +400,10 @@ mod tests {
         let (temp_sensor_events, mut temp_sensor_events_captured) = mpsc::channel(4);
         let temp_sensor_event_adapter = VecEventEnvelopeAdapter {
             initial_events: Some(vec![
-                EventEnvelope::new("id-1", Utc::now(), TempEvent::Registered),
+                EventEnvelope::new("id-1", 1, Utc::now(), TempEvent::Registered),
                 EventEnvelope::new(
                     "id-1",
+                    2,
                     Utc::now(),
                     TempEvent::TemperatureUpdated { temp: 10 },
                 ),
@@ -466,6 +501,7 @@ mod tests {
 
         let envelope = temp_sensor_events_captured.recv().await.unwrap();
         assert_eq!(envelope.entity_id, EntityId::from("id-1"));
+        assert_eq!(envelope.seq_nr, 3);
         assert_eq!(envelope.event, TempEvent::TemperatureUpdated { temp: 32 });
 
         let envelope = temp_sensor_events_captured.recv().await.unwrap();
@@ -477,6 +513,7 @@ mod tests {
 
         let envelope = temp_sensor_events_captured.recv().await.unwrap();
         assert_eq!(envelope.entity_id, EntityId::from("id-2"));
+        assert_eq!(envelope.seq_nr, 1);
         assert_eq!(envelope.event, TempEvent::Registered);
 
         assert!(temp_sensor_events_captured.recv().await.is_none());

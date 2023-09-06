@@ -167,6 +167,11 @@ pub trait WithTimestampOffset {
     fn timestamp_offset(&self) -> TimestampOffset;
 }
 
+/// Implemented by structures that can return a sequence number.
+pub trait WithSeqNr {
+    fn seq_nr(&self) -> u64;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -269,7 +269,7 @@ mod tests {
         {
             Box::pin(stream! {
                 if offset().await.is_none() {
-                    yield EventEnvelope::new(self.entity_id.clone(), Utc::now(), MyEvent { value:self.event_value.clone() }, 0);
+                    yield EventEnvelope::new(self.entity_id.clone(), 1, Utc::now(), MyEvent { value:self.event_value.clone() }, 0);
                 }
             }.chain(stream::pending()))
         }

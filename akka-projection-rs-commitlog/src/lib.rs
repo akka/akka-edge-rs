@@ -143,7 +143,7 @@ mod tests {
 
     use super::*;
     use akka_persistence_rs::EntityId;
-    use chrono::Utc;
+    use chrono::{DateTime, Utc};
     use serde::Deserialize;
     use streambed::{
         commit_log::{ConsumerRecord, Header, Key, ProducerRecord},
@@ -254,6 +254,7 @@ mod tests {
             let event = MyEvent { value };
             record.timestamp.map(|timestamp| EventEnvelope {
                 entity_id,
+                seq_nr: 1,
                 timestamp,
                 event,
                 offset: 0,
@@ -264,6 +265,8 @@ mod tests {
             &self,
             topic: Topic,
             entity_id: EntityId,
+            _seq_nr: u64,
+            timestamp: DateTime<Utc>,
             event: MyEvent,
         ) -> Option<ProducerRecord> {
             let headers = vec![Header {
@@ -273,7 +276,7 @@ mod tests {
             Some(ProducerRecord {
                 topic,
                 headers,
-                timestamp: Some(Utc::now()),
+                timestamp: Some(timestamp),
                 key: 0,
                 value: event.value.clone().into_bytes(),
                 partition: 0,
