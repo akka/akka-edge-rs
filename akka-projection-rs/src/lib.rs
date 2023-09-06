@@ -19,7 +19,7 @@ where
     Pending(B, A),
 }
 
-impl<A, E> From<A> for Handlers<A, UnusedFlowingHandler<E>>
+impl<A, E> From<A> for Handlers<A, UnusedPendingHandler<E>>
 where
     A: Handler,
     E: Send,
@@ -27,7 +27,7 @@ where
     fn from(handler: A) -> Self {
         Handlers::Ready(
             handler,
-            UnusedFlowingHandler {
+            UnusedPendingHandler {
                 phantom: PhantomData,
             },
         )
@@ -101,12 +101,12 @@ pub trait PendingHandler {
 }
 
 /// For the purposes of constructing unused handlers.
-pub struct UnusedFlowingHandler<E> {
+pub struct UnusedPendingHandler<E> {
     pub phantom: PhantomData<E>,
 }
 
 #[async_trait]
-impl<E> PendingHandler for UnusedFlowingHandler<E>
+impl<E> PendingHandler for UnusedPendingHandler<E>
 where
     E: Send,
 {
