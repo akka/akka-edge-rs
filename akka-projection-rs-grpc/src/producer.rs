@@ -180,8 +180,7 @@ pub async fn run<E>(
             let origin_id = origin_id.to_string();
             let stream_id = stream_id.to_string();
 
-            // FIXME: bounds?
-            let (event_in, mut event_in_receiver) = mpsc::channel::<EventEnvelope<E>>(10);
+            let (event_in, mut event_in_receiver) = mpsc::unbounded_channel::<EventEnvelope<E>>();
 
             let request = Request::new(stream! {
                 yield proto::ConsumeEventIn {
