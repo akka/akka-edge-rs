@@ -128,12 +128,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         mpsc::channel(MAX_REGISTRATION_MANAGER_COMMANDS);
 
     // Establish channels for the registration projection
-    let (_registration_projection_command, registration_projection_command_receiver) =
-        oneshot::channel();
+    let (_registration_kill_switch, registration_kill_switch_receiver) = oneshot::channel();
 
     // Establish channels for the temperature production
-    let (_temperature_production_command, temperature_production_command_receiver) =
-        oneshot::channel();
+    let (_temperature_kill_switch, temperature_kill_switch_receiver) = oneshot::channel();
 
     // Start up the http service
     let routes = http_server::routes(
@@ -168,7 +166,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         #[cfg(feature = "local")]
         temperature_events_key_secret_path.clone(),
         registration_offset_key_secret_path.clone(),
-        registration_projection_command_receiver,
+        registration_kill_switch_receiver,
         args.cl_args.cl_root_path.join("registration-offsets"),
         temperature_command,
     ));
@@ -180,7 +178,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ss.clone(),
         temperature_events_key_secret_path.clone(),
         temperature_offset_key_secret_path.clone(),
-        temperature_production_command_receiver,
+        temperature_kill_switch_receiver,
         args.cl_args.cl_root_path.join("temperature-offsets"),
     ));
 
