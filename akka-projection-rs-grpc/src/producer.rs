@@ -242,7 +242,7 @@ pub async fn run<E>(
 
                     let contexts = push_in_flight(&mut in_flight, &envelope, inner_reply_to);
 
-                    if event_in.send(envelope.clone()).await.is_ok() {
+                    if event_in.send(envelope.clone()).is_ok() {
                         if inner_reply.await.is_ok() {
                             if reply_to.send(()).is_err() {
                                 break 'outer;
@@ -267,7 +267,7 @@ pub async fn run<E>(
 
                                 let contexts = push_in_flight(&mut in_flight, &envelope, inner_reply_to);
 
-                                if event_in.send(envelope.clone()).await.is_ok() && inner_reply.await.is_ok() {
+                                if event_in.send(envelope.clone()).is_ok() && inner_reply.await.is_ok() {
                                     if reply_to.send(()).is_ok() {
                                         continue;
                                     } else {
