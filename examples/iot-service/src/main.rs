@@ -17,7 +17,10 @@ use std::{collections::HashMap, error::Error, net::SocketAddr};
 use streambed::secret_store::{SecretData, SecretStore};
 use streambed_confidant::{args::SsArgs, FileSecretStore};
 use streambed_logged::{args::CommitLogArgs, FileLog};
-use tokio::{net::UdpSocket, sync::mpsc};
+use tokio::{
+    net::UdpSocket,
+    sync::{mpsc, oneshot},
+};
 use tonic::transport::Uri;
 
 /// This service receives IoT data re. temperature, stores it in the
@@ -58,9 +61,7 @@ struct Args {
 #[cfg(feature = "local")]
 const MAX_REGISTRATION_MANAGER_COMMANDS: usize = 10;
 
-const MAX_REGISTRATION_PROJECTION_MANAGER_COMMANDS: usize = 1;
 const MAX_TEMPERATURE_MANAGER_COMMANDS: usize = 10;
-const MAX_TEMPERATURE_PRODUCTION_MANAGER_COMMANDS: usize = 10;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -128,11 +129,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Establish channels for the registration projection
     let (_registration_projection_command, registration_projection_command_receiver) =
-        mpsc::channel(MAX_REGISTRATION_PROJECTION_MANAGER_COMMANDS);
+        oneshot::channel();
 
     // Establish channels for the temperature production
     let (_temperature_production_command, temperature_production_command_receiver) =
-        mpsc::channel(MAX_TEMPERATURE_PRODUCTION_MANAGER_COMMANDS);
+        oneshot::channel();
 
     // Start up the http service
     let routes = http_server::routes(

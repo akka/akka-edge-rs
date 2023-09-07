@@ -5,17 +5,15 @@ use crate::proto;
 use crate::temperature::{self, EventEnvelopeMarshaler};
 use akka_persistence_rs::EntityType;
 use akka_persistence_rs_commitlog::EventEnvelope as CommitLogEventEnvelope;
-use akka_projection_rs::SinkProvider;
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
-use akka_projection_rs_grpc::producer::{GrpcEventProducer, GrpcSinkProvider};
+use akka_projection_rs_grpc::producer::GrpcEventProducer;
 use akka_projection_rs_grpc::{OriginId, StreamId};
-use akka_projection_rs_storage::Command;
 use std::sync::Arc;
 use std::{path::PathBuf, time::Duration};
 use streambed::commit_log::Topic;
 use streambed_confidant::FileSecretStore;
 use streambed_logged::FileLog;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tonic::transport::Uri;
 
 /// Apply sensor observations to a remote consumer.
@@ -25,7 +23,7 @@ pub async fn task(
     secret_store: FileSecretStore,
     events_key_secret_path: String,
     offsets_key_secret_path: String,
-    receiver: mpsc::Receiver<Command>,
+    kill_switch: oneshot::Receiver<()>,
     state_storage_path: PathBuf,
 ) {
     // Establish a sink of envelopes that will be forwarded
@@ -36,14 +34,16 @@ pub async fn task(
     let grpc_producer =
         GrpcEventProducer::new(EntityType::from(temperature::EVENTS_TOPIC), grpc_producer);
 
+    let (_task_kill_switch, task_kill_switch_receiver) = oneshot::channel();
     tokio::spawn(async {
-        let mut sink_provider = GrpcSinkProvider::new(
+        akka_projection_rs_grpc::producer::run(
             event_consumer_addr,
             OriginId::from("edge-iot-service"),
             StreamId::from("temperature-events"),
-        );
-
-        sink_provider.sink(grpc_producer_receiver).await
+            grpc_producer_receiver,
+            task_kill_switch_receiver,
+        )
+        .await
     });
 
     // Establish our source of events as a commit log
@@ -87,7 +87,7 @@ pub async fn task(
         &secret_store,
         &offsets_key_secret_path,
         &state_storage_path,
-        receiver,
+        kill_switch,
         source_provider,
         grpc_producer.handler(transformer),
         Duration::from_millis(100),

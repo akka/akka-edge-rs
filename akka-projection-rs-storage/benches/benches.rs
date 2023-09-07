@@ -10,7 +10,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use streambed::secret_store::{
     AppRoleAuthReply, Error, GetSecretReply, SecretData, SecretStore, UserPassAuthReply,
 };
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{oneshot, Notify};
 use tokio_stream::Stream;
 
 const NUM_EVENTS: usize = 10_000;
@@ -128,7 +128,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
         let events_processed = Arc::new(Notify::new());
         let (_registration_projection_command, registration_projection_command_receiver) =
-            mpsc::channel(1);
+            oneshot::channel();
 
         let task_events_processed = events_processed.clone();
         let _ = rt.spawn(async move {

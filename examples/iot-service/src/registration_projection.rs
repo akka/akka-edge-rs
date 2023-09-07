@@ -11,7 +11,6 @@ use akka_projection_rs::{Handler, HandlerError};
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
 #[cfg(feature = "grpc")]
 use akka_projection_rs_grpc::{consumer::GrpcSourceProvider, EventEnvelope, StreamId};
-use akka_projection_rs_storage::Command;
 use async_trait::async_trait;
 #[cfg(feature = "local")]
 use std::sync::Arc;
@@ -21,7 +20,7 @@ use streambed::commit_log::Topic;
 use streambed_confidant::FileSecretStore;
 #[cfg(feature = "local")]
 use streambed_logged::FileLog;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 #[cfg(feature = "grpc")]
 use tonic::transport::Uri;
 
@@ -82,7 +81,7 @@ pub async fn task(
     secret_store: FileSecretStore,
     #[cfg(feature = "local")] events_key_secret_path: String,
     offsets_key_secret_path: String,
-    receiver: mpsc::Receiver<Command>,
+    kill_switch: oneshot::Receiver<()>,
     state_storage_path: PathBuf,
     temperature_sender: mpsc::Sender<Message<temperature::Command>>,
 ) {
@@ -117,7 +116,7 @@ pub async fn task(
         &secret_store,
         &offsets_key_secret_path,
         &state_storage_path,
-        receiver,
+        kill_switch,
         source_provider,
         handler,
         Duration::from_millis(100),

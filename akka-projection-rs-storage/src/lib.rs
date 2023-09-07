@@ -8,13 +8,8 @@ use futures::{self, future, stream, Future, Stream};
 use log::error;
 use serde::{Deserialize, Serialize};
 use streambed::secret_store::SecretStore;
-use tokio::{sync::mpsc::Receiver, time};
+use tokio::{sync::oneshot, time};
 use tokio_stream::StreamExt;
-
-/// The commands that a projection task is receptive to.
-pub enum Command {
-    Stop,
-}
 
 #[derive(Default, Deserialize, Serialize)]
 struct StorableState {
@@ -34,7 +29,7 @@ pub async fn run<A, B, E, IH, SP>(
     secret_store: &impl SecretStore,
     secret_path: &str,
     state_storage_path: &Path,
-    mut receiver: Receiver<Command>,
+    mut kill_switch: oneshot::Receiver<()>,
     mut source_provider: SP,
     handler: IH,
     min_save_offset_interval: Duration,
@@ -144,7 +139,7 @@ pub async fn run<A, B, E, IH, SP>(
                     }
             }
 
-                _ = receiver.recv() => {
+                _ = &mut kill_switch => {
                     break 'outer;
                 }
 
@@ -172,7 +167,6 @@ mod tests {
         AppRoleAuthReply, Error, GetSecretReply, SecretData, SecretStore, UserPassAuthReply,
     };
     use test_log::test;
-    use tokio::sync::mpsc;
     use tokio_stream::Stream;
 
     // Scaffolding
@@ -341,7 +335,7 @@ mod tests {
         // Process an event.
 
         let (_registration_projection_command, registration_projection_command_receiver) =
-            mpsc::channel(1);
+            oneshot::channel();
 
         let task_storage_path = storage_path.clone();
         tokio::spawn(async move {
@@ -391,7 +385,7 @@ mod tests {
 
         // Process an event.
         let (_registration_projection_command, registration_projection_command_receiver) =
-            mpsc::channel(1);
+            oneshot::channel();
 
         let task_storage_path = storage_path.clone();
         tokio::spawn(async move {
