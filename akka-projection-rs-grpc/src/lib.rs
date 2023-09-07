@@ -12,7 +12,7 @@ pub mod producer;
 pub struct EventEnvelope<E> {
     pub persistence_id: PersistenceId,
     pub seq_nr: u64,
-    pub event: E,
+    pub event: Option<E>,
     pub offset: TimestampOffset,
 }
 

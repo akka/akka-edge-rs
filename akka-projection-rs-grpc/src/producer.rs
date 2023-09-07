@@ -9,7 +9,6 @@ use akka_projection_rs::HandlerError;
 use akka_projection_rs::PendingHandler;
 use async_stream::stream;
 use async_trait::async_trait;
-use futures::future;
 use prost::Name;
 use prost_types::Any;
 use std::collections::HashMap;
@@ -33,7 +32,7 @@ pub struct Transformation<E> {
     pub entity_id: EntityId,
     pub seq_nr: u64,
     pub offset: TimestampOffset,
-    pub event: E,
+    pub event: Option<E>,
 }
 
 /// Processes events transformed from some unknown event envelope (EI)
@@ -62,9 +61,7 @@ where
         &mut self,
         envelope: Self::Envelope,
     ) -> Result<Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>>, HandlerError> {
-        let Some(event) = (self.transformer)(&envelope) else {
-            return Ok(Box::pin(future::ready(Ok(()))));
-        };
+        let event = (self.transformer)(&envelope);
         let transformation = Transformation {
             entity_id: envelope.entity_id(),
             seq_nr: envelope.seq_nr(),
@@ -200,18 +197,32 @@ pub async fn run<E>(
                         nanos: envelope.offset.timestamp.timestamp_nanos() as i32
                     };
 
-                    if let Ok(any) = Any::from_msg(&envelope.event) {
+                    if let Some(event) = envelope.event {
+                        if let Ok(any) = Any::from_msg(&event) {
+                            yield proto::ConsumeEventIn {
+                                message: Some(proto::consume_event_in::Message::Event(
+                                    proto::Event {
+                                        persistence_id: envelope.persistence_id.to_string(),
+                                        seq_nr: envelope.seq_nr as i64,
+                                        slice: envelope.persistence_id.slice() as i32,
+                                        offset: Some(proto::Offset { timestamp: Some(timestamp), seen: vec![] }),
+                                        payload: Some(any),
+                                        source: ordinary_events_source.to_string(),
+                                        metadata: None,
+                                        tags: vec![]
+                                    },
+                                )),
+                            };
+                        }
+                    } else {
                         yield proto::ConsumeEventIn {
-                            message: Some(proto::consume_event_in::Message::Event(
-                                proto::Event {
+                            message: Some(proto::consume_event_in::Message::FilteredEvent(
+                                proto::FilteredEvent {
                                     persistence_id: envelope.persistence_id.to_string(),
                                     seq_nr: envelope.seq_nr as i64,
                                     slice: envelope.persistence_id.slice() as i32,
                                     offset: Some(proto::Offset { timestamp: Some(timestamp), seen: vec![] }),
-                                    payload: Some(any),
                                     source: ordinary_events_source.to_string(),
-                                    metadata: None,
-                                    tags: vec![]
                                 },
                             )),
                         };
@@ -388,10 +399,10 @@ mod tests {
                         // FIXME Flesh out these fields
                         persistence_id: "".parse().unwrap(),
                         seq_nr: 1,
-                        event: prost_types::Duration {
+                        event: Some(prost_types::Duration {
                             seconds: 0,
                             nanos: 0
-                        },
+                        }),
                         offset: TimestampOffset {
                             timestamp: Utc::now(),
                             seen: vec![]
