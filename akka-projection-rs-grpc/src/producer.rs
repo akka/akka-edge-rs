@@ -249,16 +249,16 @@ pub async fn run<E>(
                             }
                         } else {
                             unused_request = Some((envelope, reply_to));
-                            if contexts.len() > 1 {
-                                contexts.pop_back();
-                            }
+                            // We could do an extra check here and remove the hashmap entry,
+                            // but I don't think it is worth it as it will get cleared up
+                            // given the next round of successful request/responses.
+                            contexts.pop_back();
                             continue;
                         }
                     } else {
                         unused_request = Some((envelope, reply_to));
-                        if contexts.len() > 1 {
-                            contexts.pop_back();
-                        }
+                        // See the comment above.
+                        contexts.pop_back();
                         continue;
                     }
                 }
