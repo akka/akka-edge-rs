@@ -145,6 +145,8 @@ pub async fn run<E>(
     let mut delayer: Option<Delayer> = None;
     let mut connection = None;
 
+    let mut in_flight = HashMap::new();
+
     let mut unused_request: Option<(EventEnvelope<E>, oneshot::Sender<()>)> = None;
 
     'outer: loop {
@@ -233,8 +235,6 @@ pub async fn run<E>(
 
             if let Ok(response) = result {
                 let mut stream_outs = response.into_inner();
-
-                let mut in_flight = HashMap::new();
 
                 fn push_in_flight<'a, E>(
                     in_flight: &'a mut HashMap<PersistenceId, VecDeque<(u64, oneshot::Sender<()>)>>,
