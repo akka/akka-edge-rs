@@ -1,23 +1,26 @@
 mod http_server;
+mod proto;
 #[cfg(feature = "local")]
 mod registration;
 mod registration_projection;
-#[cfg(feature = "grpc")]
-mod registration_proto;
 mod temperature;
+mod temperature_production;
 mod udp_server;
 
 use clap::Parser;
 use git_version::git_version;
 use log::info;
-use rand::RngCore;
 #[cfg(feature = "grpc")]
-use registration_proto as registration;
+use proto as registration;
+use rand::RngCore;
 use std::{collections::HashMap, error::Error, net::SocketAddr};
 use streambed::secret_store::{SecretData, SecretStore};
 use streambed_confidant::{args::SsArgs, FileSecretStore};
 use streambed_logged::{args::CommitLogArgs, FileLog};
-use tokio::{net::UdpSocket, sync::mpsc};
+use tokio::{
+    net::UdpSocket,
+    sync::{mpsc, oneshot},
+};
 use tonic::transport::Uri;
 
 /// This service receives IoT data re. temperature, stores it in the
@@ -29,6 +32,11 @@ struct Args {
     /// Logged commit log args
     #[clap(flatten)]
     cl_args: CommitLogArgs,
+
+    /// A socket address for connecting to a GRPC event consuming
+    /// service for temperature observations.
+    #[clap(env, long, default_value = "http://127.0.0.1:8101")]
+    event_consumer_addr: Uri,
 
     /// A socket address for connecting to a GRPC event producing
     /// service for registrations. Only relevant when building the
@@ -53,7 +61,6 @@ struct Args {
 #[cfg(feature = "local")]
 const MAX_REGISTRATION_MANAGER_COMMANDS: usize = 10;
 
-const MAX_REGISTRATION_PROJECTION_MANAGER_COMMANDS: usize = 1;
 const MAX_TEMPERATURE_MANAGER_COMMANDS: usize = 10;
 
 #[tokio::main]
@@ -93,6 +100,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // different.
     let registration_offset_key_secret_path = temperature_events_key_secret_path.clone();
 
+    // The path of a key to use to encrypt offsets for temperature productions. We'll
+    // just re-use the above key for convenience, but ordinarily, these keys would be
+    // different.
+    let temperature_offset_key_secret_path = temperature_events_key_secret_path.clone();
+
     if let Ok(None) = ss.get_secret(&temperature_events_key_secret_path).await {
         // If we can't write this initial secret then all bets are off
         let mut key = vec![0; 16];
@@ -116,8 +128,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         mpsc::channel(MAX_REGISTRATION_MANAGER_COMMANDS);
 
     // Establish channels for the registration projection
-    let (_registration_projection_command, registration_projection_command_receiver) =
-        mpsc::channel(MAX_REGISTRATION_PROJECTION_MANAGER_COMMANDS);
+    let (_registration_kill_switch, registration_kill_switch_receiver) = oneshot::channel();
+
+    // Establish channels for the temperature production
+    let (_temperature_kill_switch, temperature_kill_switch_receiver) = oneshot::channel();
 
     // Start up the http service
     let routes = http_server::routes(
@@ -152,9 +166,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
         #[cfg(feature = "local")]
         temperature_events_key_secret_path.clone(),
         registration_offset_key_secret_path.clone(),
-        registration_projection_command_receiver,
+        registration_kill_switch_receiver,
         args.cl_args.cl_root_path.join("registration-offsets"),
         temperature_command,
+    ));
+
+    // Start up a task to manage temperature productions
+    tokio::spawn(temperature_production::task(
+        cl.clone(),
+        args.event_consumer_addr,
+        ss.clone(),
+        temperature_events_key_secret_path.clone(),
+        temperature_offset_key_secret_path.clone(),
+        temperature_kill_switch_receiver,
+        args.cl_args.cl_root_path.join("temperature-offsets"),
     ));
 
     // All things started up but our temperature. We're running

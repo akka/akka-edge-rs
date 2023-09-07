@@ -1,11 +1,12 @@
 use akka_persistence_rs::Offset;
 use akka_persistence_rs::PersistenceId;
+use akka_persistence_rs::TimestampOffset;
 use akka_projection_rs::SourceProvider;
 use async_stream::stream;
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::DateTime;
 use chrono::NaiveDateTime;
+use chrono::TimeZone;
 use chrono::Timelike;
 use chrono::Utc;
 use prost::Message;
@@ -16,15 +17,9 @@ use tokio_stream::StreamExt;
 use tonic::{transport::Uri, Request};
 
 use crate::delayer::Delayer;
-use crate::event_producer::StreamOut;
+use crate::proto;
+use crate::EventEnvelope;
 use crate::StreamId;
-use crate::{
-    event_producer::{
-        event_producer_service_client::EventProducerServiceClient, stream_in, stream_out, InitReq,
-        Offset as EventProducerOffset, PersistenceIdSeqNr, StreamIn,
-    },
-    EventEnvelope,
-};
 
 pub struct GrpcSourceProvider<E> {
     delayer: Option<Delayer>,
@@ -76,7 +71,10 @@ where
         FR: Future<Output = Option<Offset>> + Send,
     {
         let connection = if let Ok(connection) =
-            EventProducerServiceClient::connect(self.event_producer_addr.clone()).await
+            proto::event_producer_service_client::EventProducerServiceClient::connect(
+                self.event_producer_addr.clone(),
+            )
+            .await
         {
             self.delayer = None;
             Some(connection)
@@ -93,15 +91,15 @@ where
 
         if let Some(mut connection) = connection {
             let offset = offset().await.and_then(|offset| {
-                if let Offset::Timestamp(timestamp, seen) = offset {
-                    Some(EventProducerOffset {
+                if let Offset::Timestamp(TimestampOffset { timestamp, seen }) = offset {
+                    Some(proto::Offset {
                         timestamp: Some(Timestamp {
                             seconds: timestamp.timestamp(),
                             nanos: timestamp.nanosecond() as i32,
                         }),
                         seen: seen
                             .into_iter()
-                            .map(|(persistence_id, offset)| PersistenceIdSeqNr {
+                            .map(|(persistence_id, offset)| proto::PersistenceIdSeqNr {
                                 persistence_id: persistence_id.to_string(),
                                 seq_nr: offset as i64,
                             })
@@ -113,13 +111,12 @@ where
             });
 
             let request = Request::new(
-                tokio_stream::iter(vec![StreamIn {
-                    message: Some(stream_in::Message::Init(InitReq {
+                tokio_stream::iter(vec![proto::StreamIn {
+                    message: Some(proto::stream_in::Message::Init(proto::InitReq {
                         stream_id: self.stream_id.to_string(),
                         slice_min: self.slice_range.start as i32,
                         slice_max: self.slice_range.end as i32 - 1,
                         offset,
-                        // FIXME filters
                         filter: vec![],
                     })),
                 }])
@@ -129,21 +126,29 @@ where
             if let Ok(response) = result {
                 let mut stream_outs = response.into_inner();
                 Box::pin(stream! {
-                    while let Some(Ok(StreamOut{ message: Some(stream_out::Message::Event(streamed_event)) })) = stream_outs.next().await {
-                        let Some(payload) = streamed_event.payload else { continue };
-
+                    while let Some(Ok(proto::StreamOut{ message: Some(proto::stream_out::Message::Event(streamed_event)) })) = stream_outs.next().await {
                         let Ok(persistence_id) = streamed_event.persistence_id.parse::<PersistenceId>() else { break };
+
+                        let seq_nr = streamed_event.seq_nr as u64;
+
+                        let event = if let Some(payload) = streamed_event.payload {
+                            if !payload.type_url.starts_with("type.googleapis.com/") {
+                                break
+                            }
+                            let Ok(event) = E::decode(Bytes::from(payload.value)) else { break };
+                            Some(event)
+                        } else {
+                            None
+                        };
+
                         let Some(offset) = streamed_event.offset else { break };
                         let Some(timestamp) = offset.timestamp else { break };
                         let Some(timestamp) = NaiveDateTime::from_timestamp_opt(timestamp.seconds, timestamp.nanos as u32) else { break };
-                        let timestamp = DateTime::from_utc(timestamp, Utc);
+                        let timestamp = Utc.from_utc_datetime(&timestamp);
                         let seen = offset.seen.iter().flat_map(|pis| pis.persistence_id.parse().ok().map(|pid|(pid, pis.seq_nr as u64))).collect();
+                        let offset = TimestampOffset { timestamp, seen };
 
-                        if !payload.type_url.starts_with("type.googleapis.com/") {
-                            break
-                        }
-                        let Ok(event) = E::decode(Bytes::from(payload.value)) else { break };
-                        yield EventEnvelope::new(persistence_id.entity_id, event, timestamp, seen)
+                        yield EventEnvelope {persistence_id, seq_nr, event, offset};
                     }
                 })
             } else {
@@ -159,14 +164,9 @@ where
 mod tests {
 
     use super::*;
-    use crate::event_producer::{
-        event_producer_service_server::{EventProducerService, EventProducerServiceServer},
-        stream_out, Event, EventTimestampRequest, EventTimestampResponse, LoadEventRequest,
-        LoadEventResponse, Offset as EventProducerOffset, StreamOut,
-    };
     use akka_persistence_rs::{EntityId, EntityType, PersistenceId};
     use async_stream::stream;
-    use chrono::Utc;
+    use chrono::{DateTime, Utc};
     use prost_types::Any;
     use std::{net::ToSocketAddrs, sync::Arc};
     use test_log::test;
@@ -180,31 +180,32 @@ mod tests {
     }
 
     #[async_trait]
-    impl EventProducerService for TestEventProducerService {
-        type EventsBySlicesStream = Pin<Box<dyn Stream<Item = Result<StreamOut, Status>> + Send>>;
+    impl proto::event_producer_service_server::EventProducerService for TestEventProducerService {
+        type EventsBySlicesStream =
+            Pin<Box<dyn Stream<Item = Result<proto::StreamOut, Status>> + Send>>;
 
         async fn events_by_slices(
             &self,
-            _request: Request<Streaming<StreamIn>>,
+            _request: Request<Streaming<proto::StreamIn>>,
         ) -> Result<Response<Self::EventsBySlicesStream>, Status> {
             let stream_event_time = self.event_time;
             let stream_event_seen_by = self.event_seen_by.clone();
             Ok(Response::new(Box::pin(stream!({
                 let mut value = Vec::with_capacity(6);
                 0xffffffffu32.encode(&mut value).unwrap();
-                yield Ok(StreamOut {
-                    message: Some(stream_out::Message::Event(Event {
+                yield Ok(proto::StreamOut {
+                    message: Some(proto::stream_out::Message::Event(proto::Event {
                         persistence_id: "entity-type|entity-id".to_string(),
-                        seq_nr: 0,
+                        seq_nr: 1,
                         slice: 0,
-                        offset: Some(EventProducerOffset {
+                        offset: Some(proto::Offset {
                             timestamp: Some(Timestamp {
                                 seconds: stream_event_time.timestamp(),
                                 nanos: stream_event_time.nanosecond() as i32,
                             }),
                             seen: stream_event_seen_by
                                 .iter()
-                                .map(|(persistence_id, seq_nr)| PersistenceIdSeqNr {
+                                .map(|(persistence_id, seq_nr)| proto::PersistenceIdSeqNr {
                                     persistence_id: persistence_id.to_string(),
                                     seq_nr: *seq_nr as i64,
                                 })
@@ -226,15 +227,16 @@ mod tests {
 
         async fn event_timestamp(
             &self,
-            _request: tonic::Request<EventTimestampRequest>,
-        ) -> std::result::Result<tonic::Response<EventTimestampResponse>, tonic::Status> {
+            _request: tonic::Request<proto::EventTimestampRequest>,
+        ) -> std::result::Result<tonic::Response<proto::EventTimestampResponse>, tonic::Status>
+        {
             todo!()
         }
 
         async fn load_event(
             &self,
-            _request: tonic::Request<LoadEventRequest>,
-        ) -> std::result::Result<tonic::Response<LoadEventResponse>, tonic::Status> {
+            _request: tonic::Request<proto::LoadEventRequest>,
+        ) -> std::result::Result<tonic::Response<proto::LoadEventResponse>, tonic::Status> {
             todo!()
         }
     }
@@ -243,8 +245,9 @@ mod tests {
     async fn can_source() {
         let entity_type = EntityType::from("entity-type");
         let entity_id = EntityId::from("entity-id");
+        let persistence_id = PersistenceId::new(entity_type, entity_id.clone());
         let event_time = Utc::now();
-        let event_seen_by = vec![(PersistenceId::new(entity_type, entity_id.clone()), 1)];
+        let event_seen_by = vec![(persistence_id.clone(), 1)];
 
         let server_kill_switch = Arc::new(Notify::new());
 
@@ -253,10 +256,14 @@ mod tests {
         let task_kill_switch = server_kill_switch.clone();
         tokio::spawn(async move {
             Server::builder()
-                .add_service(EventProducerServiceServer::new(TestEventProducerService {
-                    event_time: task_event_time,
-                    event_seen_by: task_event_seen_by,
-                }))
+                .add_service(
+                    proto::event_producer_service_server::EventProducerServiceServer::new(
+                        TestEventProducerService {
+                            event_time: task_event_time,
+                            event_seen_by: task_event_seen_by,
+                        },
+                    ),
+                )
                 .serve_with_shutdown(
                     "127.0.0.1:50051".to_socket_addrs().unwrap().next().unwrap(),
                     task_kill_switch.notified(),
@@ -276,7 +283,10 @@ mod tests {
             let task_event_seen_by = event_seen_by.clone();
             let mut source = source_provider
                 .source(|| async {
-                    Some(Offset::Timestamp(event_time, task_event_seen_by.clone()))
+                    Some(Offset::Timestamp(TimestampOffset {
+                        timestamp: event_time,
+                        seen: task_event_seen_by.clone(),
+                    }))
                 })
                 .await;
 
@@ -290,12 +300,15 @@ mod tests {
 
             assert_eq!(
                 envelope,
-                Some(EventEnvelope::new(
-                    entity_id,
-                    0xffffffff,
-                    event_time,
-                    event_seen_by
-                ))
+                Some(EventEnvelope {
+                    persistence_id,
+                    seq_nr: 1,
+                    event: Some(0xffffffff),
+                    offset: TimestampOffset {
+                        timestamp: event_time,
+                        seen: event_seen_by,
+                    }
+                })
             );
 
             break;

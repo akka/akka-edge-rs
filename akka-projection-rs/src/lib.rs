@@ -2,11 +2,51 @@
 //! Each envelope is associated with an offset representing the position in the stream. This offset is used for resuming
 //! the stream from that position when the projection is restarted.
 
-use std::{future::Future, pin::Pin};
+use std::{future::Future, marker::PhantomData, pin::Pin};
 
 use akka_persistence_rs::Offset;
 use async_trait::async_trait;
 use tokio_stream::Stream;
+
+/// Captures the various types of handlers and the way they are performed.
+pub enum Handlers<A, B>
+where
+    A: Handler,
+    B: PendingHandler,
+{
+    Ready(A, B),
+    Pending(B, A),
+}
+
+impl<A, E> From<A> for Handlers<A, UnusedPendingHandler<E>>
+where
+    A: Handler,
+    E: Send,
+{
+    fn from(handler: A) -> Self {
+        Handlers::Ready(
+            handler,
+            UnusedPendingHandler {
+                phantom: PhantomData,
+            },
+        )
+    }
+}
+
+impl<B, E> From<B> for Handlers<UnusedHandler<E>, B>
+where
+    B: PendingHandler,
+    E: Send,
+{
+    fn from(handler: B) -> Self {
+        Handlers::Pending(
+            handler,
+            UnusedHandler {
+                phantom: PhantomData,
+            },
+        )
+    }
+}
 
 /// Errors for event processing by a handler.
 pub struct HandlerError;
@@ -15,10 +55,70 @@ pub struct HandlerError;
 #[async_trait]
 pub trait Handler {
     /// The envelope processed by the handler.
-    type Envelope;
+    type Envelope: Send;
 
     /// Process an envelope.
-    async fn process(&mut self, envelope: Self::Envelope) -> Result<(), HandlerError>;
+    /// A handler's result is "completed" where envelopes are processed upon the previous one
+    /// having been processed successfully.
+    async fn process(&mut self, _envelope: Self::Envelope) -> Result<(), HandlerError>;
+}
+
+/// For the purposes of constructing unused handlers.
+pub struct UnusedHandler<E> {
+    pub phantom: PhantomData<E>,
+}
+
+#[async_trait]
+impl<E> Handler for UnusedHandler<E>
+where
+    E: Send,
+{
+    type Envelope = E;
+
+    async fn process(&mut self, _envelope: Self::Envelope) -> Result<(), HandlerError> {
+        Err(HandlerError)
+    }
+}
+
+/// Handle event envelopes in any way that an application requires.
+#[async_trait]
+pub trait PendingHandler {
+    /// The envelope processed by the handler.
+    type Envelope: Send;
+
+    /// The maximum number of envelopes that can be pending at any time.
+    const MAX_PENDING: usize;
+
+    /// Process an envelope with a pending result.
+    /// A handler's result is "pending" when envelopes can be passed through and the
+    /// result of processing one is not immediately known. Meanwhile, more
+    /// envelopes can be passed though.
+    async fn process_pending(
+        &mut self,
+        envelope: Self::Envelope,
+    ) -> Result<Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>>, HandlerError>;
+}
+
+/// For the purposes of constructing unused handlers.
+pub struct UnusedPendingHandler<E> {
+    pub phantom: PhantomData<E>,
+}
+
+#[async_trait]
+impl<E> PendingHandler for UnusedPendingHandler<E>
+where
+    E: Send,
+{
+    type Envelope = E;
+
+    const MAX_PENDING: usize = 0;
+
+    async fn process_pending(
+        &mut self,
+        _envelope: Self::Envelope,
+    ) -> Result<Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>>, HandlerError> {
+        Err(HandlerError)
+    }
 }
 
 /// Errors for event processing by a handler.

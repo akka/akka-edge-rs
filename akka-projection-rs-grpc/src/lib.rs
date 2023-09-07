@@ -1,54 +1,38 @@
 #![doc = include_str!("../README.md")]
 
-use akka_persistence_rs::{EntityId, Offset, PersistenceId, WithOffset};
-use chrono::{DateTime, Utc};
+use akka_persistence_rs::{Offset, PersistenceId, TimestampOffset, WithOffset};
 use smol_str::SmolStr;
 
 pub mod consumer;
 mod delayer;
+pub mod producer;
 
 /// An envelope wraps a gRPC event associated with a specific entity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventEnvelope<E> {
-    pub entity_id: EntityId,
-    pub event: E,
-    pub timestamp: DateTime<Utc>,
-    pub seen: Vec<(PersistenceId, u64)>,
-}
-
-impl<E> EventEnvelope<E> {
-    pub fn new<EI>(
-        entity_id: EI,
-        event: E,
-        timestamp: DateTime<Utc>,
-        seen: Vec<(PersistenceId, u64)>,
-    ) -> Self
-    where
-        EI: Into<EntityId>,
-    {
-        Self {
-            entity_id: entity_id.into(),
-            event,
-            timestamp,
-            seen,
-        }
-    }
+    pub persistence_id: PersistenceId,
+    pub seq_nr: u64,
+    pub event: Option<E>,
+    pub offset: TimestampOffset,
 }
 
 impl<E> WithOffset for EventEnvelope<E> {
     fn offset(&self) -> Offset {
-        Offset::Timestamp(self.timestamp, self.seen.clone())
+        Offset::Timestamp(self.offset.clone())
     }
 }
 
-pub mod event_producer {
+/// Identifies an event producer to a consumer
+pub type OriginId = SmolStr;
+
+/// The logical stream identifier, mapped to a specific internal entity type by
+/// the producer settings
+pub type StreamId = SmolStr;
+
+pub mod proto {
     // Note when using Rust Analyzier, you may get a `non_snake_case` warning.
     // This warning is benign and a bug of Rust Analyzer.
     // https://github.com/rust-lang/rust-analyzer/issues/15344
     // https://github.com/rust-lang/rust-analyzer/issues/15394
     tonic::include_proto!("akka.projection.grpc");
 }
-
-/// The logical stream identifier, mapped to a specific internal entity type by
-/// the producer settings
-pub type StreamId = SmolStr;

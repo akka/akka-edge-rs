@@ -96,9 +96,9 @@ impl EventSourcedBehavior for Behavior {
 // Marshalers can be completely overidden to serialize events and encode
 // keys in any way required.
 
-struct EventEnvelopeMarshaler {
-    events_key_secret_path: Arc<str>,
-    secret_store: FileSecretStore,
+pub struct EventEnvelopeMarshaler {
+    pub events_key_secret_path: Arc<str>,
+    pub secret_store: FileSecretStore,
 }
 
 // Our event keys will occupy the top 12 bits of the key, meaning
@@ -142,7 +142,9 @@ impl CommitLogEventEnvelopeMarshaler<Event> for EventEnvelopeMarshaler {
     }
 }
 
-const EVENTS_TOPIC: &str = "temperature";
+/// Where events are published to.
+pub const EVENTS_TOPIC: &str = "temperature";
+
 const MAX_HISTORY_EVENTS: usize = 10;
 // Size the following to the typical number of devices we expect to have in the system.
 // Note though that it will impact memory, so there is a trade-off. Let's suppose this

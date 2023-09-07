@@ -2,10 +2,11 @@
 
 use akka_persistence_rs::{
     entity_manager::{EventEnvelope as EntityManagerEventEnvelope, Handler, SourceProvider},
-    EntityId, Offset, WithOffset,
+    EntityId, Offset, TimestampOffset, WithEntityId, WithOffset, WithSeqNr, WithTimestampOffset,
 };
 use async_stream::stream;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{io, marker::PhantomData, pin::Pin, sync::Arc};
 use streambed::{
@@ -21,26 +22,58 @@ use tokio_stream::{Stream, StreamExt};
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventEnvelope<E> {
     pub entity_id: EntityId,
+    pub seq_nr: u64,
+    pub timestamp: DateTime<Utc>,
     pub event: E,
     pub offset: CommitLogOffset,
 }
 
 impl<E> EventEnvelope<E> {
-    pub fn new<EI>(entity_id: EI, event: E, offset: CommitLogOffset) -> Self
+    pub fn new<EI>(
+        entity_id: EI,
+        seq_nr: u64,
+        timestamp: DateTime<Utc>,
+        event: E,
+        offset: CommitLogOffset,
+    ) -> Self
     where
         EI: Into<EntityId>,
     {
         Self {
             entity_id: entity_id.into(),
+            seq_nr,
+            timestamp,
             event,
             offset,
         }
     }
 }
 
+impl<E> WithEntityId for EventEnvelope<E> {
+    fn entity_id(&self) -> EntityId {
+        self.entity_id.clone()
+    }
+}
+
 impl<E> WithOffset for EventEnvelope<E> {
     fn offset(&self) -> Offset {
         Offset::Sequence(self.offset)
+    }
+}
+
+impl<E> WithSeqNr for EventEnvelope<E> {
+    fn seq_nr(&self) -> u64 {
+        self.seq_nr
+    }
+}
+
+impl<E> WithTimestampOffset for EventEnvelope<E> {
+    fn timestamp_offset(&self) -> TimestampOffset {
+        TimestampOffset {
+            timestamp: self.timestamp,
+            // FIXME: Is this correct?
+            seen: vec![],
+        }
     }
 }
 
@@ -75,6 +108,8 @@ where
         entity_id: EntityId,
         mut record: ConsumerRecord,
     ) -> Option<EventEnvelope<E>> {
+        use streambed::commit_log::{Header, HeaderKey};
+
         streambed::decrypt_buf(
             self.secret_store(),
             &self.secret_path(&entity_id),
@@ -82,7 +117,28 @@ where
             |value| ciborium::de::from_reader(value),
         )
         .await
-        .map(|event| EventEnvelope::new(entity_id, event, record.offset))
+        .and_then(|event| {
+            let seq_nr = record.headers.iter().find_map(|Header { key, value }| {
+                if key == &HeaderKey::from("seq_nr") {
+                    if value.len() >= 8 {
+                        if let Ok(value) = value[0..8].try_into() {
+                            Some(u64::from_be_bytes(value))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+            seq_nr.and_then(|seq_nr| {
+                record.timestamp.map(|timestamp| {
+                    EventEnvelope::new(entity_id, seq_nr, timestamp, event, record.offset)
+                })
+            })
+        })
     }
 
     #[cfg(not(feature = "cbor"))]
@@ -97,8 +153,12 @@ where
         &self,
         topic: Topic,
         entity_id: EntityId,
+        seq_nr: u64,
+        timestamp: DateTime<Utc>,
         event: E,
     ) -> Option<ProducerRecord> {
+        use streambed::commit_log::{Header, HeaderKey};
+
         let key = Self::to_compaction_key(&entity_id, &event)?;
         let buf = streambed::encrypt_struct(
             self.secret_store(),
@@ -113,8 +173,11 @@ where
         .await?;
         Some(ProducerRecord {
             topic,
-            headers: vec![],
-            timestamp: None,
+            headers: vec![Header {
+                key: HeaderKey::from("seq_nr"),
+                value: u64::to_be_bytes(seq_nr).to_vec(),
+            }],
+            timestamp: Some(timestamp),
             key,
             value: buf,
             partition: 0,
@@ -126,6 +189,8 @@ where
         &self,
         topic: Topic,
         entity_id: EntityId,
+        seq_nr: u64,
+        timestamp: DateTime<Utc>,
         event: E,
     ) -> Option<ProducerRecord>;
 }
@@ -202,6 +267,8 @@ where
                         {
                             yield EntityManagerEventEnvelope::new(
                                 envelope.entity_id,
+                                envelope.seq_nr,
+                                envelope.timestamp,
                                 envelope.event,
                             );
                         }
@@ -237,6 +304,8 @@ where
                             {
                                 yield EntityManagerEventEnvelope::new(
                                     envelope.entity_id,
+                                    envelope.seq_nr,
+                                    envelope.timestamp,
                                     envelope.event,
                                 );
                             }
@@ -299,6 +368,8 @@ where
             .producer_record(
                 self.topic.clone(),
                 envelope.entity_id.clone(),
+                envelope.seq_nr,
+                envelope.timestamp,
                 envelope.event.clone(),
             )
             .await
@@ -329,7 +400,7 @@ mod tests {
     use akka_persistence_rs::{entity::EventSourcedBehavior, entity_manager};
     use serde::Deserialize;
     use streambed::{
-        commit_log::Header,
+        commit_log::{Header, HeaderKey},
         secret_store::{AppRoleAuthReply, Error, GetSecretReply, SecretData, UserPassAuthReply},
     };
     use streambed_logged::FileLog;
@@ -459,8 +530,10 @@ mod tests {
         ) -> Option<EventEnvelope<MyEvent>> {
             let value = String::from_utf8(record.value).ok()?;
             let event = MyEvent { value };
-            Some(EventEnvelope {
+            record.timestamp.map(|timestamp| EventEnvelope {
                 entity_id,
+                seq_nr: 1,
+                timestamp,
                 event,
                 offset: 0,
             })
@@ -470,16 +543,18 @@ mod tests {
             &self,
             topic: Topic,
             entity_id: EntityId,
+            _seq_nr: u64,
+            timestamp: DateTime<Utc>,
             event: MyEvent,
         ) -> Option<ProducerRecord> {
             let headers = vec![Header {
-                key: Topic::from("entity-id"),
+                key: HeaderKey::from("entity-id"),
                 value: entity_id.as_bytes().into(),
             }];
             Some(ProducerRecord {
                 topic,
                 headers,
-                timestamp: None,
+                timestamp: Some(timestamp),
                 key: 0,
                 value: event.value.clone().into_bytes(),
                 partition: 0,
@@ -509,6 +584,7 @@ mod tests {
         // Scaffolding
 
         let entity_id = EntityId::from("some-entity");
+        let timestamp = Utc::now();
 
         // Produce a stream given no prior persistence. Should return an empty stream.
 
@@ -522,6 +598,8 @@ mod tests {
         let envelope = adapter
             .process(EntityManagerEventEnvelope::new(
                 entity_id.clone(),
+                1,
+                timestamp,
                 MyEvent {
                     value: "first-event".to_string(),
                 },
@@ -533,6 +611,8 @@ mod tests {
         let envelope = adapter
             .process(EntityManagerEventEnvelope::new(
                 entity_id.clone(),
+                2,
+                timestamp,
                 MyEvent {
                     value: "second-event".to_string(),
                 },
@@ -546,6 +626,8 @@ mod tests {
         adapter
             .process(EntityManagerEventEnvelope::new(
                 "some-other-entity-id",
+                1,
+                timestamp,
                 MyEvent {
                     value: "third-event".to_string(),
                 },
@@ -573,6 +655,7 @@ mod tests {
 
             let envelope = envelopes.next().await.unwrap();
             assert_eq!(envelope.entity_id, entity_id);
+            assert_eq!(envelope.seq_nr, 1);
             assert_eq!(envelope.event.value, "first-event");
 
             let envelope = envelopes.next().await.unwrap();

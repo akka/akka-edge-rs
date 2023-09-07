@@ -9,6 +9,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 exponential-backoff = { workspace = true }
+futures = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 smol_str = { workspace = true }

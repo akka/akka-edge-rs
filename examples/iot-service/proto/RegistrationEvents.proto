@@ -8,7 +8,6 @@ package iot.registration;
 // Events published to external services
 
 message Registered {
-    string sensor_id = 1;
     SecretDataValue secret = 2;
 }
 

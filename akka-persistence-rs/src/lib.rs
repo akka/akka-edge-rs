@@ -20,6 +20,11 @@ pub type EntityType = smol_str::SmolStr;
 /// Uniquely identifies an entity, or entity instance.
 pub type EntityId = smol_str::SmolStr;
 
+/// Implemented by structures that can return an entity id.
+pub trait WithEntityId {
+    fn entity_id(&self) -> EntityId;
+}
+
 /// A slice is deterministically defined based on the persistence id.
 /// `NUMBER_OF_SLICES` is not configurable because changing the value would result in
 /// different slice for a persistence id than what was used before, which would
@@ -126,6 +131,12 @@ impl<C> Message<C> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct TimestampOffset {
+    pub timestamp: DateTime<Utc>,
+    pub seen: Vec<(PersistenceId, u64)>,
+}
+
 #[derive(Deserialize, Serialize)]
 pub enum Offset {
     /// Corresponds to an ordered sequence number for the events. Note that the corresponding
@@ -143,12 +154,22 @@ pub enum Offset {
     /// The `offset` is exclusive, i.e. the event with the exact same sequence number will not be included
     /// in the returned stream. This means that you can use the offset that is returned in `EventEnvelope`
     /// as the `offset` parameter in a subsequent query.
-    Timestamp(DateTime<Utc>, Vec<(PersistenceId, u64)>),
+    Timestamp(TimestampOffset),
 }
 
 /// Implemented by structures that can return an offset.
 pub trait WithOffset {
     fn offset(&self) -> Offset;
+}
+
+/// Implemented by structures that can return a timestamp offset.
+pub trait WithTimestampOffset {
+    fn timestamp_offset(&self) -> TimestampOffset;
+}
+
+/// Implemented by structures that can return a sequence number.
+pub trait WithSeqNr {
+    fn seq_nr(&self) -> u64;
 }
 
 #[cfg(test)]

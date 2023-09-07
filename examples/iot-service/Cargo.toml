@@ -36,8 +36,8 @@ akka-persistence-rs-commitlog = { path = "../../akka-persistence-rs-commitlog", 
     "cbor",
 ] }
 akka-projection-rs = { path = "../../akka-projection-rs" }
-akka-projection-rs-commitlog = { path = "../../akka-projection-rs-commitlog", optional = true }
-akka-projection-rs-grpc = { path = "../../akka-projection-rs-grpc", optional = true }
+akka-projection-rs-commitlog = { path = "../../akka-projection-rs-commitlog" }
+akka-projection-rs-grpc = { path = "../../akka-projection-rs-grpc" }
 akka-projection-rs-storage = { path = "../../akka-projection-rs-storage" }
 
 [dev-dependencies]
@@ -51,7 +51,7 @@ prost-build = { workspace = true }
 default = ["local"]
 
 # Stand the example up with a local source of projections
-local = ["dep:akka-projection-rs-commitlog"]
+local = []
 
 # Stand the example up with a remote source of projections using gRPC
-grpc = ["dep:akka-projection-rs-grpc"]
+grpc = []

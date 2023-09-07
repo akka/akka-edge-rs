@@ -7,6 +7,7 @@ edition = "2021"
 async-trait = { workspace = true }
 ciborium = { workspace = true }
 log = { workspace = true }
+futures = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 streambed = { workspace = true }
@@ -19,6 +20,7 @@ akka-projection-rs = { path = "../akka-projection-rs" }
 
 [dev-dependencies]
 async-stream = { workspace = true }
+chrono = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 env_logger = { workspace = true }
 test-log = { workspace = true }

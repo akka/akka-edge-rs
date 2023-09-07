@@ -143,6 +143,7 @@ mod tests {
 
     use super::*;
     use akka_persistence_rs::EntityId;
+    use chrono::{DateTime, Utc};
     use serde::Deserialize;
     use streambed::{
         commit_log::{ConsumerRecord, Header, Key, ProducerRecord},
@@ -251,8 +252,10 @@ mod tests {
         ) -> Option<EventEnvelope<MyEvent>> {
             let value = String::from_utf8(record.value).ok()?;
             let event = MyEvent { value };
-            Some(EventEnvelope {
+            record.timestamp.map(|timestamp| EventEnvelope {
                 entity_id,
+                seq_nr: 1,
+                timestamp,
                 event,
                 offset: 0,
             })
@@ -262,6 +265,8 @@ mod tests {
             &self,
             topic: Topic,
             entity_id: EntityId,
+            _seq_nr: u64,
+            timestamp: DateTime<Utc>,
             event: MyEvent,
         ) -> Option<ProducerRecord> {
             let headers = vec![Header {
@@ -271,7 +276,7 @@ mod tests {
             Some(ProducerRecord {
                 topic,
                 headers,
-                timestamp: None,
+                timestamp: Some(timestamp),
                 key: 0,
                 value: event.value.clone().into_bytes(),
                 partition: 0,
@@ -304,7 +309,7 @@ mod tests {
         let record = ProducerRecord {
             topic: topic.clone(),
             headers,
-            timestamp: None,
+            timestamp: Some(Utc::now()),
             key: 0,
             value: event_value.clone().into_bytes(),
             partition: 0,
@@ -322,13 +327,9 @@ mod tests {
         );
 
         let mut envelopes = source_provider.source(|| async { None }).await;
-        assert_eq!(
-            envelopes.next().await,
-            Some(EventEnvelope::new(
-                entity_id,
-                MyEvent { value: event_value },
-                0
-            ))
-        );
+        let envelope = envelopes.next().await.unwrap();
+
+        assert_eq!(envelope.entity_id, entity_id,);
+        assert_eq!(envelope.event, MyEvent { value: event_value },);
     }
 }
