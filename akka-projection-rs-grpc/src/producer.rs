@@ -249,12 +249,16 @@ pub async fn run<E>(
                             }
                         } else {
                             unused_request = Some((envelope, reply_to));
-                            contexts.pop_back();
+                            if contexts.len() > 1 {
+                                contexts.pop_back();
+                            }
                             continue;
                         }
                     } else {
                         unused_request = Some((envelope, reply_to));
-                        contexts.pop_back();
+                        if contexts.len() > 1 {
+                            contexts.pop_back();
+                        }
                         continue;
                     }
                 }
@@ -289,12 +293,15 @@ pub async fn run<E>(
                             message: Some(proto::consume_event_out::Message::Ack(proto::ConsumerEventAck { persistence_id, seq_nr })),
                         })) = stream_outs.next() => {
                             if let Ok(persistence_id) = persistence_id.parse() {
-                                let contexts = in_flight
-                                    .entry(persistence_id)
-                                    .or_default();
-                                while let Some((expected_seq_nr, reply_to)) = contexts.pop_front() {
-                                    if seq_nr as u64 == expected_seq_nr  && reply_to.send(()).is_ok() {
-                                        break;
+                                if let Some(contexts) = in_flight.get_mut(&persistence_id) {
+                                    let seq_nr = seq_nr as u64;
+                                    while let Some((expected_seq_nr, reply_to)) = contexts.pop_front() {
+                                        if seq_nr == expected_seq_nr  && reply_to.send(()).is_ok() {
+                                            break;
+                                        }
+                                    }
+                                    if contexts.is_empty() {
+                                        in_flight.remove(&persistence_id);
                                     }
                                 }
                             }
