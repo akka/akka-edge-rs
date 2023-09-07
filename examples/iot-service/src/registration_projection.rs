@@ -54,8 +54,11 @@ impl Handler for RegistrationHandler {
         #[cfg(feature = "grpc")]
         let (entity_id, secret) = {
             let secret = {
-                let registration::Registered { secret, .. } = envelope.event;
-                let Some(secret) = secret else {
+                let Some(registration::Registered {
+                    secret: Some(secret),
+                    ..
+                }) = envelope.event
+                else {
                     return Err(HandlerError);
                 };
                 secret.value.into()
