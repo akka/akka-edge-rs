@@ -116,6 +116,8 @@ impl CommitLogEventEnvelopeMarshaler<Event> for EventEnvelopeMarshaler {
 }
 
 pub const EVENTS_TOPIC: &str = "registrations";
+pub const ENTITY_TYPE: &str = "Registration";
+
 // Size the following to the typical number of entities we expect to have in the system.
 const MAX_TOPIC_COMPACTION_KEYS: usize = 1;
 

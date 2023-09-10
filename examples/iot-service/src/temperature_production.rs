@@ -32,7 +32,7 @@ pub async fn task(
     let (grpc_producer, grpc_producer_receiver) = mpsc::channel(10);
 
     let grpc_producer =
-        GrpcEventProducer::new(EntityType::from(temperature::EVENTS_TOPIC), grpc_producer);
+        GrpcEventProducer::new(EntityType::from(temperature::ENTITY_TYPE), grpc_producer);
 
     let (_task_kill_switch, task_kill_switch_receiver) = oneshot::channel();
     tokio::spawn(async {
@@ -56,7 +56,7 @@ pub async fn task(
         },
         "iot-service-projection",
         Topic::from(temperature::EVENTS_TOPIC),
-        EntityType::from(temperature::EVENTS_TOPIC),
+        EntityType::from(temperature::ENTITY_TYPE),
     );
 
     // Optionally transform events from the commit log to an event the

@@ -100,7 +100,7 @@ pub async fn task(
         },
         "iot-service-projection",
         Topic::from(registration::EVENTS_TOPIC),
-        EntityType::from(registration::EVENTS_TOPIC),
+        EntityType::from(registration::ENTITY_TYPE),
     );
 
     #[cfg(feature = "grpc")]

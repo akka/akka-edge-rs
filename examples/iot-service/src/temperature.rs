@@ -142,8 +142,11 @@ impl CommitLogEventEnvelopeMarshaler<Event> for EventEnvelopeMarshaler {
     }
 }
 
-/// Where events are published to.
+/// Where events are published in the commit log.
 pub const EVENTS_TOPIC: &str = "temperature";
+
+/// A namespace for our entity's events
+pub const ENTITY_TYPE: &str = "Sensor";
 
 const MAX_HISTORY_EVENTS: usize = 10;
 // Size the following to the typical number of devices we expect to have in the system.
