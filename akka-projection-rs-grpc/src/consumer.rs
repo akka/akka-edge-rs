@@ -126,29 +126,31 @@ where
             if let Ok(response) = result {
                 let mut stream_outs = response.into_inner();
                 Box::pin(stream! {
-                    while let Some(Ok(proto::StreamOut{ message: Some(proto::stream_out::Message::Event(streamed_event)) })) = stream_outs.next().await {
-                        let Ok(persistence_id) = streamed_event.persistence_id.parse::<PersistenceId>() else { break };
+                    while let Some(stream_out) = stream_outs.next().await {
+                        if let Ok(proto::StreamOut{ message: Some(proto::stream_out::Message::Event(streamed_event)) }) = stream_out {
+                            let Ok(persistence_id) = streamed_event.persistence_id.parse::<PersistenceId>() else { break };
 
-                        let seq_nr = streamed_event.seq_nr as u64;
+                            let seq_nr = streamed_event.seq_nr as u64;
 
-                        let event = if let Some(payload) = streamed_event.payload {
-                            if !payload.type_url.starts_with("type.googleapis.com/") {
-                                break
-                            }
-                            let Ok(event) = E::decode(Bytes::from(payload.value)) else { break };
-                            Some(event)
-                        } else {
-                            None
-                        };
+                            let event = if let Some(payload) = streamed_event.payload {
+                                if !payload.type_url.starts_with("type.googleapis.com/") {
+                                    break
+                                }
+                                let Ok(event) = E::decode(Bytes::from(payload.value)) else { break };
+                                Some(event)
+                            } else {
+                                None
+                            };
 
-                        let Some(offset) = streamed_event.offset else { break };
-                        let Some(timestamp) = offset.timestamp else { break };
-                        let Some(timestamp) = NaiveDateTime::from_timestamp_opt(timestamp.seconds, timestamp.nanos as u32) else { break };
-                        let timestamp = Utc.from_utc_datetime(&timestamp);
-                        let seen = offset.seen.iter().flat_map(|pis| pis.persistence_id.parse().ok().map(|pid|(pid, pis.seq_nr as u64))).collect();
-                        let offset = TimestampOffset { timestamp, seen };
+                            let Some(offset) = streamed_event.offset else { break };
+                            let Some(timestamp) = offset.timestamp else { break };
+                            let Some(timestamp) = NaiveDateTime::from_timestamp_opt(timestamp.seconds, timestamp.nanos as u32) else { break };
+                            let timestamp = Utc.from_utc_datetime(&timestamp);
+                            let seen = offset.seen.iter().flat_map(|pis| pis.persistence_id.parse().ok().map(|pid|(pid, pis.seq_nr as u64))).collect();
+                            let offset = TimestampOffset { timestamp, seen };
 
-                        yield EventEnvelope {persistence_id, seq_nr, event, offset};
+                            yield EventEnvelope {persistence_id, seq_nr, event, offset};
+                        }
                     }
                 })
             } else {
