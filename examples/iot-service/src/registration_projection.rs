@@ -59,7 +59,7 @@ impl Handler for RegistrationHandler {
                     ..
                 }) = envelope.event
                 else {
-                    return Err(HandlerError);
+                    return Ok(());
                 };
                 secret.value.into()
             };
