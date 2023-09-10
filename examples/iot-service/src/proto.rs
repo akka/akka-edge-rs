@@ -6,6 +6,10 @@ include!(concat!(env!("OUT_DIR"), "/iot.registration.rs"));
 impl Name for Registered {
     const NAME: &'static str = "Registered";
     const PACKAGE: &'static str = "iot.registration";
+
+    fn type_url() -> String {
+        format!("type.googleapis.com/{}", Self::full_name())
+    }
 }
 
 include!(concat!(env!("OUT_DIR"), "/iot.temperature.rs"));
@@ -14,4 +18,8 @@ include!(concat!(env!("OUT_DIR"), "/iot.temperature.rs"));
 impl Name for TemperatureRead {
     const NAME: &'static str = "TemperatureRead";
     const PACKAGE: &'static str = "iot.temperature";
+
+    fn type_url() -> String {
+        format!("type.googleapis.com/{}", Self::full_name())
+    }
 }
