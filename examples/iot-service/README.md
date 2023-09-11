@@ -13,7 +13,7 @@ service will also remember where it is up to and, in the case of a restart, it w
 any new registrations from where it left off. Observations can then be sent to the Rust service via UDP.
 The Rust service will use its established connection with the JVM service to propogate these local observations.
 
-The service is a complete example of how a Rust service written for the edge, and includes encryption. 
+The project is a complete example of how a Rust service can be written for the edge, and includes encryption. 
 Encryption should normally be applied to data at rest (persisted by the commit log) and in flight 
 (http and UDP). For simplicity, we apply encryption to the commit log data, but not http and UDP.
 
