@@ -46,12 +46,3 @@ test-log = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }
-
-[features]
-default = ["local"]
-
-# Stand the example up with a local source of projections
-local = []
-
-# Stand the example up with a remote source of projections using gRPC
-grpc = []

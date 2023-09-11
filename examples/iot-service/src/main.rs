@@ -1,7 +1,5 @@
 mod http_server;
 mod proto;
-#[cfg(feature = "local")]
-mod registration;
 mod registration_projection;
 mod temperature;
 mod temperature_production;
@@ -10,7 +8,6 @@ mod udp_server;
 use clap::Parser;
 use git_version::git_version;
 use log::info;
-#[cfg(feature = "grpc")]
 use proto as registration;
 use rand::RngCore;
 use std::{collections::HashMap, error::Error, net::SocketAddr};
@@ -39,8 +36,7 @@ struct Args {
     event_consumer_addr: Uri,
 
     /// A socket address for connecting to a GRPC event producing
-    /// service for registrations. Only relevant when building the
-    /// example with the "grpc" feature.
+    /// service for registrations.
     #[clap(env, long, default_value = "http://127.0.0.1:8101")]
     event_producer_addr: Uri,
 
@@ -57,9 +53,6 @@ struct Args {
     #[clap(env, long, default_value = "127.0.0.1:8081")]
     udp_addr: SocketAddr,
 }
-
-#[cfg(feature = "local")]
-const MAX_REGISTRATION_MANAGER_COMMANDS: usize = 10;
 
 const MAX_TEMPERATURE_MANAGER_COMMANDS: usize = 10;
 
@@ -122,11 +115,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (temperature_command, temperature_command_receiver) =
         mpsc::channel(MAX_TEMPERATURE_MANAGER_COMMANDS);
 
-    // Establish channels for the registrations
-    #[cfg(feature = "local")]
-    let (registration_command, registration_command_receiver) =
-        mpsc::channel(MAX_REGISTRATION_MANAGER_COMMANDS);
-
     // Establish channels for the registration projection
     let (_registration_kill_switch, registration_kill_switch_receiver) = oneshot::channel();
 
@@ -134,11 +122,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (_temperature_kill_switch, temperature_kill_switch_receiver) = oneshot::channel();
 
     // Start up the http service
-    let routes = http_server::routes(
-        #[cfg(feature = "local")]
-        registration_command,
-        temperature_command.clone(),
-    );
+    let routes = http_server::routes(temperature_command.clone());
     tokio::spawn(warp::serve(routes).run(args.http_addr));
     info!("HTTP listening on {}", args.http_addr);
 
@@ -147,24 +131,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tokio::spawn(udp_server::task(socket, temperature_command.clone()));
     info!("UDP listening on {}", args.udp_addr);
 
-    // Start up a task to manage registrations
-    #[cfg(feature = "local")]
-    tokio::spawn(registration::task(
-        cl.clone(),
-        ss.clone(),
-        temperature_events_key_secret_path.clone(),
-        registration_command_receiver,
-    ));
-
     // Start up a task to manage registration projections
     tokio::spawn(registration_projection::task(
-        #[cfg(feature = "local")]
-        cl.clone(),
-        #[cfg(feature = "grpc")]
         args.event_producer_addr,
         ss.clone(),
-        #[cfg(feature = "local")]
-        temperature_events_key_secret_path.clone(),
         registration_offset_key_secret_path.clone(),
         registration_kill_switch_receiver,
         args.cl_args.cl_root_path.join("registration-offsets"),
