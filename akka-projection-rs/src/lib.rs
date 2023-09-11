@@ -33,6 +33,48 @@ where
     }
 }
 
+pub struct FnHandler<A, AR, E>
+where
+    A: FnMut(E) -> AR,
+    AR: Future<Output = Result<(), HandlerError>>,
+{
+    f: A,
+    phantom: PhantomData<E>,
+}
+
+#[async_trait]
+impl<A, AR, E> Handler for FnHandler<A, AR, E>
+where
+    A: FnMut(E) -> AR + Send,
+    AR: Future<Output = Result<(), HandlerError>> + Send,
+    E: Send,
+{
+    type Envelope = E;
+
+    async fn process(&mut self, envelope: Self::Envelope) -> Result<(), HandlerError> {
+        (self.f)(envelope).await
+    }
+}
+
+impl<A, AR, E> From<A> for Handlers<FnHandler<A, AR, E>, UnusedPendingHandler<E>>
+where
+    A: FnMut(E) -> AR + Send,
+    AR: Future<Output = Result<(), HandlerError>> + Send,
+    E: Send,
+{
+    fn from(handler: A) -> Self {
+        Handlers::Ready(
+            FnHandler {
+                f: handler,
+                phantom: PhantomData,
+            },
+            UnusedPendingHandler {
+                phantom: PhantomData,
+            },
+        )
+    }
+}
+
 impl<B, E> From<B> for Handlers<UnusedHandler<E>, B>
 where
     B: PendingHandler,
