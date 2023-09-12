@@ -42,7 +42,6 @@ pub async fn run<A, B, E, IH, SP>(
 {
     let mut handler = handler.into();
 
-    let mut handler_futures = VecDeque::with_capacity(B::MAX_PENDING);
     let mut always_pending_handler: Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>> =
         Box::pin(future::pending());
 
@@ -72,6 +71,8 @@ pub async fn run<A, B, E, IH, SP>(
         let mut active_source = &mut source;
         let mut next_save_offset_interval = Duration::MAX;
         let mut last_offset = None;
+
+        let mut handler_futures = VecDeque::with_capacity(B::MAX_PENDING);
 
         loop {
             tokio::select! {
