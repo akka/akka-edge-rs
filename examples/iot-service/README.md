@@ -67,7 +67,7 @@ integers where the top bit, when set, indicates that the next byte also contains
 data. See [Postcard](https://docs.rs/postcard/latest/postcard/) for more details.
 
 ```
-echo -n "\x01\x02" | nc -w0 127.0.0.1 -u 8081
+echo -n -e "\x01\x02" | nc -w0 127.0.0.1 -u 8081
 ```
 
 You should see a `DEBUG` log indicating that the post has been received. And
@@ -78,4 +78,9 @@ curl -v "127.0.0.1:8080/api/temperature/1"
 ```
 
 Back over in the JVM iot-service, you should also see these temperature observations
-appear in its log.
+appear in its log, and you can retrieve the latest observation with:
+
+```
+grpcurl -d '{"sensor_entity_id":"1"}' -plaintext 127.0.0.1:8101 iot.temperature.SensorTwinService.GetTemperature
+```
+
