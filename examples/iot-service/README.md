@@ -29,7 +29,7 @@ mkdir -p /tmp/iot-service/var/lib/confidant
 chmod 700 /tmp/iot-service/var/lib/confidant
 mkdir -p /tmp/iot-service/var/lib/logged
 echo -n "01234567890123456789012345678912some-secret-id" | \
-RUST_LOG=debug cargo run -- \
+RUST_LOG=info cargo run -- \
   --cl-root-path=/tmp/iot-service/var/lib/logged \
   --ss-role-id="iot-service" \
   --ss-root-path=/tmp/iot-service/var/lib/confidant
