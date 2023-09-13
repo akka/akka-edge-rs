@@ -117,6 +117,8 @@ pub async fn run<A, B, E, IH, SP>(
                     if pending.is_ok() {
                         next_save_offset_interval = min_save_offset_interval;
                         last_offset = Some(offset);
+                    } else {
+                        break;
                     }
                 }
 

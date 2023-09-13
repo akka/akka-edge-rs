@@ -147,7 +147,6 @@ pub async fn run<E>(
     E: Clone + Name + 'static,
 {
     let mut delayer: Option<Delayer> = None;
-    let mut connection = None;
 
     let mut in_flight: HashMap<PersistenceId, VecDeque<Context<E>>> = HashMap::new();
 
@@ -156,26 +155,24 @@ pub async fn run<E>(
             break;
         }
 
-        if connection.is_none() {
-            connection = if let Ok(connection) =
-                proto::event_consumer_service_client::EventConsumerServiceClient::connect(
-                    event_consumer_addr.clone(),
-                )
-                .await
-            {
-                delayer = None;
-                Some(connection)
+        let mut connection = if let Ok(connection) =
+            proto::event_consumer_service_client::EventConsumerServiceClient::connect(
+                event_consumer_addr.clone(),
+            )
+            .await
+        {
+            delayer = None;
+            Some(connection)
+        } else {
+            if let Some(d) = &mut delayer {
+                d.delay().await;
             } else {
-                if let Some(d) = &mut delayer {
-                    d.delay().await;
-                } else {
-                    let mut d = Delayer::default();
-                    d.delay().await;
-                    delayer = Some(d);
-                }
-                None
-            };
-        }
+                let mut d = Delayer::default();
+                d.delay().await;
+                delayer = Some(d);
+            }
+            None
+        };
 
         if let Some(connection) = &mut connection {
             let origin_id = origin_id.to_string();
@@ -259,7 +256,7 @@ pub async fn run<E>(
                 for (_, contexts) in in_flight.iter() {
                     for (envelope, _) in contexts {
                         if event_in.send(envelope.clone()).is_err() {
-                            break 'outer;
+                            continue 'outer;
                         }
                     }
                 }
@@ -274,11 +271,11 @@ pub async fn run<E>(
                                 contexts.push_back((envelope.clone(), reply_to));
 
                                 if event_in.send(envelope).is_err()  {
-                                    break 'outer;
+                                    continue 'outer;
                                 }
 
                             } else {
-                                break 'outer;
+                                continue 'outer;
                             }
                         }
 
