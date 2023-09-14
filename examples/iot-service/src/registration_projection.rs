@@ -19,7 +19,7 @@ pub async fn task(
     offsets_key_secret_path: String,
     kill_switch: oneshot::Receiver<()>,
     state_storage_path: PathBuf,
-    temperature_sender: mpsc::Sender<Message<temperature::Command>>,
+    temperature_command: mpsc::Sender<Message<temperature::Command>>,
 ) {
     // Establish our source of events either as a commit log or a gRPC
     // connection, depending on our feature configuration.
@@ -44,7 +44,7 @@ pub async fn task(
             (envelope.persistence_id.entity_id, secret)
         };
 
-        temperature_sender
+        temperature_command
             .send(Message::new(
                 entity_id,
                 temperature::Command::Register { secret },
