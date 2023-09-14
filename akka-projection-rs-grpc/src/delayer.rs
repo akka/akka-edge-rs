@@ -10,6 +10,9 @@ use std::time::Duration;
 use exponential_backoff::Backoff;
 use tokio::time;
 
+const MIN_DELAY: Duration = Duration::from_millis(100);
+const MAX_DELAY: Duration = Duration::from_secs(10);
+
 pub struct Delayer {
     backoff: Backoff,
     retry_attempt: u32,
@@ -20,8 +23,7 @@ impl Delayer {
         let delay = if let Some(d) = self.backoff.next(self.retry_attempt) {
             d
         } else {
-            self.retry_attempt = 0;
-            self.backoff.next(self.retry_attempt).unwrap()
+            MAX_DELAY
         };
         time::sleep(delay).await;
         self.retry_attempt = self.retry_attempt.wrapping_add(1);
@@ -30,7 +32,7 @@ impl Delayer {
 
 impl Default for Delayer {
     fn default() -> Self {
-        let backoff = Backoff::new(8, Duration::from_millis(100), Duration::from_secs(10));
+        let backoff = Backoff::new(8, MIN_DELAY, MAX_DELAY);
         Self {
             backoff,
             retry_attempt: 0,
