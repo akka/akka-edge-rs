@@ -30,9 +30,5 @@ pub type OriginId = SmolStr;
 pub type StreamId = SmolStr;
 
 pub mod proto {
-    // Note when using Rust Analyzier, you may get a `non_snake_case` warning.
-    // This warning is benign and a bug of Rust Analyzer.
-    // https://github.com/rust-lang/rust-analyzer/issues/15344
-    // https://github.com/rust-lang/rust-analyzer/issues/15394
     tonic::include_proto!("akka.projection.grpc");
 }
