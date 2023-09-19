@@ -20,36 +20,36 @@ use tokio::{
 };
 use tonic::transport::Uri;
 
-/// This service receives IoT data re. temperature, stores it in the
-/// commit log keyed by its sensor id, and provides an HTTP interface
-/// to access it.
+// This service receives IoT data re. temperature, stores it in the
+// commit log keyed by its sensor id, and provides an HTTP interface
+// to access it.
 #[derive(Parser, Debug)]
 #[clap(author, about, long_about = None, version = git_version ! ())]
 struct Args {
-    /// Logged commit log args
+    // Logged commit log args
     #[clap(flatten)]
     cl_args: CommitLogArgs,
 
-    /// A socket address for connecting to a GRPC event consuming
-    /// service for temperature observations.
+    // A socket address for connecting to a GRPC event consuming
+    // service for temperature observations.
     #[clap(env, long, default_value = "http://127.0.0.1:8101")]
     event_consumer_addr: Uri,
 
-    /// A socket address for connecting to a GRPC event producing
-    /// service for registrations.
+    // A socket address for connecting to a GRPC event producing
+    // service for registrations.
     #[clap(env, long, default_value = "http://127.0.0.1:8101")]
     event_producer_addr: Uri,
 
-    /// A socket address for serving our HTTP web service requests.
+    // A socket address for serving our HTTP web service requests.
     #[clap(env, long, default_value = "127.0.0.1:8080")]
     http_addr: SocketAddr,
 
-    /// Logged commit log args
+    // Logged commit log args
     #[clap(flatten)]
     ss_args: SsArgs,
 
-    /// A socket address for receiving telemetry from our ficticious
-    /// sensor.
+    // A socket address for receiving telemetry from our ficticious
+    // sensor.
     #[clap(env, long, default_value = "127.0.0.1:8081")]
     udp_addr: SocketAddr,
 }
@@ -133,6 +133,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Start up a task to manage registration projections
     tokio::spawn(registration_projection::task(
+        cl.clone(),
         args.event_producer_addr,
         ss.clone(),
         registration_offset_key_secret_path.clone(),

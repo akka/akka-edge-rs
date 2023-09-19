@@ -78,22 +78,47 @@ impl<E> WithTimestampOffset for EventEnvelope<E> {
 }
 
 /// Provides the ability to transform the the memory representation of Akka Persistence events from
+/// and to the records that a CommitLog expects.
+#[async_trait]
+pub trait CommitLogMarshaler<E>
+where
+    for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
+{
+    /// Provide a key we can use for the purposes of log compaction.
+    /// A key would generally comprise and event type value held in
+    /// the high bits, and the entity id in the lower bits.
+    fn to_compaction_key(&self, entity_id: &EntityId, event: &E) -> Option<Key>;
+
+    /// Extract an entity id from a consumer envelope.
+    fn to_entity_id(&self, record: &ConsumerRecord) -> Option<EntityId>;
+
+    /// Produce an event envelope from a consumer record.
+    async fn envelope(
+        &self,
+        entity_id: EntityId,
+        record: ConsumerRecord,
+    ) -> Option<EventEnvelope<E>>;
+
+    /// Produce a producer record from an event and its entity info.
+    async fn producer_record(
+        &self,
+        topic: Topic,
+        entity_id: EntityId,
+        seq_nr: u64,
+        timestamp: DateTime<Utc>,
+        event: E,
+    ) -> Option<ProducerRecord>;
+}
+
+/// Provides the ability to transform the the memory representation of Akka Persistence events from
 /// and to the records that a CommitLog expects. Given the "cbor" feature, we use CBOR for serialization.
 /// Encryption/decryption to commit log records is also applied. Therefore a secret store is expected.
 #[async_trait]
-pub trait CommitLogEventEnvelopeMarshaler<E>
+pub trait EncryptedCommitLogMarshaler<E>: CommitLogMarshaler<E>
 where
     for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
     type SecretStore: SecretStore;
-
-    /// Provide a key we can use for the purposes of log compaction.
-    /// A key would generally comprise and event type value held in
-    /// the high bits, and the entity id in the lower bits.
-    fn to_compaction_key(entity_id: &EntityId, event: &E) -> Option<Key>;
-
-    /// Extract an entity id from a consumer envelope.
-    fn to_entity_id(record: &ConsumerRecord) -> Option<EntityId>;
 
     /// Return a reference to a secret store for encryption/decryption.
     fn secret_store(&self) -> &Self::SecretStore;
@@ -103,7 +128,7 @@ where
     fn secret_path(&self, entity_id: &EntityId) -> Arc<str>;
 
     #[cfg(feature = "cbor")]
-    async fn envelope(
+    async fn decrypted_envelope(
         &self,
         entity_id: EntityId,
         mut record: ConsumerRecord,
@@ -142,14 +167,14 @@ where
     }
 
     #[cfg(not(feature = "cbor"))]
-    async fn envelope(
+    async fn decrypted_envelope(
         &self,
         entity_id: EntityId,
-        record: ConsumerRecord,
+        mut record: ConsumerRecord,
     ) -> Option<EventEnvelope<E>>;
 
     #[cfg(feature = "cbor")]
-    async fn producer_record(
+    async fn encrypted_producer_record(
         &self,
         topic: Topic,
         entity_id: EntityId,
@@ -159,7 +184,7 @@ where
     ) -> Option<ProducerRecord> {
         use streambed::commit_log::{Header, HeaderKey};
 
-        let key = Self::to_compaction_key(&entity_id, &event)?;
+        let key = self.to_compaction_key(&entity_id, &event)?;
         let buf = streambed::encrypt_struct(
             self.secret_store(),
             &self.secret_path(&entity_id),
@@ -185,7 +210,7 @@ where
     }
 
     #[cfg(not(feature = "cbor"))]
-    async fn producer_record(
+    async fn encrypted_producer_record(
         &self,
         topic: Topic,
         entity_id: EntityId,
@@ -211,7 +236,7 @@ where
 pub struct CommitLogTopicAdapter<CL, E, M>
 where
     CL: CommitLog,
-    M: CommitLogEventEnvelopeMarshaler<E>,
+    M: CommitLogMarshaler<E>,
     for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
     commit_log: CL,
@@ -224,7 +249,7 @@ where
 impl<CL, E, M> CommitLogTopicAdapter<CL, E, M>
 where
     CL: CommitLog,
-    M: CommitLogEventEnvelopeMarshaler<E>,
+    M: CommitLogMarshaler<E>,
     for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
     pub fn new(commit_log: CL, marshaler: M, consumer_group_name: &str, topic: Topic) -> Self {
@@ -242,7 +267,7 @@ where
 impl<CL, E, M> SourceProvider<E> for CommitLogTopicAdapter<CL, E, M>
 where
     CL: CommitLog,
-    M: CommitLogEventEnvelopeMarshaler<E> + Send + Sync,
+    M: CommitLogMarshaler<E> + Send + Sync,
     for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
     async fn source_initial(
@@ -261,7 +286,7 @@ where
         if let Ok(mut consumer_records) = consumer_records {
             Ok(Box::pin(stream!({
                 while let Some(consumer_record) = consumer_records.next().await {
-                    if let Some(record_entity_id) = M::to_entity_id(&consumer_record) {
+                    if let Some(record_entity_id) = marshaler.to_entity_id(&consumer_record) {
                         if let Some(envelope) =
                             marshaler.envelope(record_entity_id, consumer_record).await
                         {
@@ -297,7 +322,7 @@ where
         if let Ok(mut consumer_records) = consumer_records {
             Ok(Box::pin(stream!({
                 while let Some(consumer_record) = consumer_records.next().await {
-                    if let Some(record_entity_id) = M::to_entity_id(&consumer_record) {
+                    if let Some(record_entity_id) = marshaler.to_entity_id(&consumer_record) {
                         if &record_entity_id == entity_id {
                             if let Some(envelope) =
                                 marshaler.envelope(record_entity_id, consumer_record).await
@@ -356,7 +381,7 @@ async fn produce_to_last_offset<'async_trait>(
 impl<CL, E, M> Handler<E> for CommitLogTopicAdapter<CL, E, M>
 where
     CL: CommitLog,
-    M: CommitLogEventEnvelopeMarshaler<E> + Send + Sync,
+    M: CommitLogMarshaler<E> + Send + Sync,
     for<'async_trait> E: Clone + DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
     async fn process(
@@ -399,10 +424,7 @@ mod tests {
     use super::*;
     use akka_persistence_rs::{entity::EventSourcedBehavior, entity_manager};
     use serde::Deserialize;
-    use streambed::{
-        commit_log::{Header, HeaderKey},
-        secret_store::{AppRoleAuthReply, Error, GetSecretReply, SecretData, UserPassAuthReply},
-    };
+    use streambed::commit_log::{Header, HeaderKey};
     use streambed_logged::FileLog;
     use test_log::test;
     use tokio::{sync::mpsc, time};
@@ -450,77 +472,20 @@ mod tests {
     // can lay out an envelope any way that you would like to. Note that secret keys
     // are important though.
 
-    #[derive(Clone)]
-    struct NoopSecretStore;
-
-    #[async_trait]
-    impl SecretStore for NoopSecretStore {
-        async fn approle_auth(
-            &self,
-            _role_id: &str,
-            _secret_id: &str,
-        ) -> Result<AppRoleAuthReply, Error> {
-            panic!("should not be called")
-        }
-
-        async fn create_secret(
-            &self,
-            _secret_path: &str,
-            _secret_data: SecretData,
-        ) -> Result<(), Error> {
-            panic!("should not be called")
-        }
-
-        async fn get_secret(&self, _secret_path: &str) -> Result<Option<GetSecretReply>, Error> {
-            panic!("should not be called")
-        }
-
-        async fn token_auth(&self, _token: &str) -> Result<(), Error> {
-            panic!("should not be called")
-        }
-
-        async fn userpass_auth(
-            &self,
-            _username: &str,
-            _password: &str,
-        ) -> Result<UserPassAuthReply, Error> {
-            panic!("should not be called")
-        }
-
-        async fn userpass_create_update_user(
-            &self,
-            _current_username: &str,
-            _username: &str,
-            _password: &str,
-        ) -> Result<(), Error> {
-            panic!("should not be called")
-        }
-    }
-
     struct MyEventMarshaler;
 
     #[async_trait]
-    impl CommitLogEventEnvelopeMarshaler<MyEvent> for MyEventMarshaler {
-        type SecretStore = NoopSecretStore;
-
-        fn to_compaction_key(_entity_id: &EntityId, _event: &MyEvent) -> Option<Key> {
+    impl CommitLogMarshaler<MyEvent> for MyEventMarshaler {
+        fn to_compaction_key(&self, _entity_id: &EntityId, _event: &MyEvent) -> Option<Key> {
             panic!("should not be called")
         }
 
-        fn to_entity_id(record: &ConsumerRecord) -> Option<EntityId> {
+        fn to_entity_id(&self, record: &ConsumerRecord) -> Option<EntityId> {
             let Header { value, .. } = record
                 .headers
                 .iter()
                 .find(|header| header.key == "entity-id")?;
             std::str::from_utf8(value).ok().map(EntityId::from)
-        }
-
-        fn secret_store(&self) -> &Self::SecretStore {
-            panic!("should not be called")
-        }
-
-        fn secret_path(&self, _entity_id: &EntityId) -> Arc<str> {
-            panic!("should not be called")
         }
 
         async fn envelope(

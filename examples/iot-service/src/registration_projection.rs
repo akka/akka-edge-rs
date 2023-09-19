@@ -1,19 +1,25 @@
-//! Handle registration projection concerns
-//!
+// Handle registration projection concerns
 
 use akka_persistence_rs::Message;
 use akka_projection_rs::HandlerError;
 use akka_projection_rs_grpc::{consumer::GrpcSourceProvider, EventEnvelope, StreamId};
 use std::{path::PathBuf, time::Duration};
 use streambed_confidant::FileSecretStore;
+use streambed_logged::FileLog;
 use tokio::sync::{mpsc, oneshot};
 use tonic::transport::Uri;
 
 use crate::registration;
 use crate::temperature;
 
-/// Apply sensor registrations to the temperature sensor entity.
+// Declares the expected number of distinct device registrations.
+
+const EXPECTED_DISTINCT_REGISTRATIONS: usize = 1000;
+
+// Apply sensor registrations to the temperature sensor entity.
+
 pub async fn task(
+    commit_log: FileLog,
     event_producer_addr: Uri,
     secret_store: FileSecretStore,
     offsets_key_secret_path: String,
@@ -21,11 +27,28 @@ pub async fn task(
     state_storage_path: PathBuf,
     temperature_command: mpsc::Sender<Message<temperature::Command>>,
 ) {
-    // Establish our source of events either as a commit log or a gRPC
-    // connection, depending on our feature configuration.
+    // Establish our source of as a gRPC connection, and also setup
+    // an offset store to track the ordering of remote events. In so doing,
+    // we must also describe how an entity can be represented reliably as
+    // distinct keys to this store. In the case here, because our entity
+    // ids are numeric, we attempt a numeric conversion.
 
-    let source_provider =
-        GrpcSourceProvider::new(event_producer_addr, StreamId::from("registration-events"));
+    let stream_id = StreamId::from("registration-events");
+
+    let (offset_store, offset_store_receiver) = mpsc::channel(1);
+    let offset_store_id = stream_id.clone();
+    tokio::spawn(async move {
+        akka_projection_rs_commitlog::offset_store::run(
+            commit_log,
+            EXPECTED_DISTINCT_REGISTRATIONS,
+            offset_store_id,
+            offset_store_receiver,
+            |entity_id, _| entity_id.parse().ok(),
+        )
+        .await
+    });
+
+    let source_provider = GrpcSourceProvider::new(event_producer_addr, stream_id, offset_store);
 
     // Declare a handler to forward projection events on to the temperature entity.
 

@@ -137,7 +137,7 @@ pub struct TimestampOffset {
     pub seen: Vec<(PersistenceId, u64)>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub enum Offset {
     /// Corresponds to an ordered sequence number for the events. Note that the corresponding
     /// offset of each event is provided in an Envelope,

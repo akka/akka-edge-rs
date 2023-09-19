@@ -1,5 +1,5 @@
-//! Handle UDP sensor serving concerns
-//!
+// Handle UDP sensor serving concerns
+
 use akka_persistence_rs::Message;
 use log::debug;
 use serde::{Deserialize, Serialize};

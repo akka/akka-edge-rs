@@ -6,8 +6,12 @@ edition = "2021"
 [dependencies]
 async-stream = { workspace = true }
 async-trait = { workspace = true }
+chrono = { workspace = true }
 serde = { workspace = true }
+smol_str = { workspace = true }
 streambed = { workspace = true }
+streambed-logged = { workspace = true }
+tokio = { workspace = true }
 tokio-stream = { workspace = true }
 
 akka-persistence-rs = { path = "../akka-persistence-rs" }
@@ -15,7 +19,6 @@ akka-persistence-rs-commitlog = { path = "../akka-persistence-rs-commitlog" }
 akka-projection-rs = { path = "../akka-projection-rs" }
 
 [dev-dependencies]
-chrono = { workspace = true }
 env_logger = { workspace = true }
 streambed-logged = { workspace = true }
 test-log = { workspace = true }

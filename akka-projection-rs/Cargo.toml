@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 async-trait = { workspace = true }
 chrono = { workspace = true }
+serde = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 

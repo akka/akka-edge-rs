@@ -1,11 +1,11 @@
-//! Handle http serving concerns
-//!
+// Handle http serving concerns
+
 use crate::temperature;
 use akka_persistence_rs::Message;
 use tokio::sync::{mpsc, oneshot};
 use warp::{hyper::StatusCode, Filter, Rejection, Reply};
 
-/// Declares routes to serve our HTTP interface.
+// Declares routes to serve our HTTP interface.
 pub fn routes(
     temperature_command: mpsc::Sender<Message<temperature::Command>>,
 ) -> impl Filter<Extract = (impl Reply,), Error = Rejection> + Clone {

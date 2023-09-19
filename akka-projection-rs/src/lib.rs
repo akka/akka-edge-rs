@@ -8,6 +8,8 @@ use akka_persistence_rs::Offset;
 use async_trait::async_trait;
 use tokio_stream::Stream;
 
+pub mod offset_store;
+
 /// Captures the various types of handlers and the way they are performed.
 pub enum Handlers<A, B>
 where
