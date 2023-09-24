@@ -1,10 +1,12 @@
 // Handle temperature sensor entity concerns
 
-use std::{collections::VecDeque, num::NonZeroUsize, sync::Arc};
+use std::{io, num::NonZeroUsize, sync::Arc};
 
 use akka_persistence_rs::{
-    effect::{emit_event, reply, unhandled, Effect, EffectExt},
+    effect::{self, emit_event, reply, then, unhandled, Effect, EffectExt},
     entity::{Context, EventSourcedBehavior},
+};
+use akka_persistence_rs::{
     entity_manager::{self},
     EntityId, Message,
 };
@@ -13,36 +15,25 @@ use akka_persistence_rs_commitlog::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
+use futures::future;
 use streambed::commit_log::{ConsumerRecord, Key, ProducerRecord, Topic};
 use streambed_confidant::FileSecretStore;
 use streambed_logged::{compaction::NthKeyBasedRetention, FileLog};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
-// Declare the entity and its behavior
+pub use iot_service_model::temperature::{Event, SecretDataValue, State};
 
-#[derive(Default)]
-pub struct State {
-    history: VecDeque<u32>,
-    secret: SecretDataValue,
-}
-
-pub type SecretDataValue = SmolStr;
+// Declare temperature sensor entity concerns
 
 pub enum Command {
-    Get { reply_to: oneshot::Sender<Vec<u32>> },
+    Get { reply_to: oneshot::Sender<State> },
     Post { temperature: u32 },
     Register { secret: SecretDataValue },
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-pub enum Event {
-    Registered { secret: SecretDataValue },
-    TemperatureRead { temperature: u32 },
+pub struct Behavior {
+    events: broadcast::Sender<(EntityId, Event)>,
 }
-
-struct Behavior;
 
 impl EventSourcedBehavior for Behavior {
     type State = State;
@@ -52,17 +43,42 @@ impl EventSourcedBehavior for Behavior {
     type Event = Event;
 
     fn for_command(
-        _context: &Context,
+        context: &Context,
         state: &Self::State,
         command: Self::Command,
     ) -> Box<dyn Effect<Self>> {
         match command {
             Command::Get { reply_to } if !state.secret.is_empty() => {
-                reply(reply_to, state.history.clone().into()).boxed()
+                reply(reply_to, state.clone()).boxed()
             }
 
             Command::Post { temperature } if !state.secret.is_empty() => {
-                emit_event(Event::TemperatureRead { temperature }).boxed()
+                let broadcast_entity_id = context.entity_id.clone();
+                let broadcast_temperature = temperature;
+                emit_event(Event::TemperatureRead { temperature })
+                    .and(then(move |behavior: &Self, _new_state, prev_result| {
+                        let result = if prev_result.is_ok() {
+                            behavior
+                                .events
+                                .send((
+                                    broadcast_entity_id,
+                                    Event::TemperatureRead {
+                                        temperature: broadcast_temperature,
+                                    },
+                                ))
+                                .map(|_| ())
+                                .map_err(|_| {
+                                    effect::Error::IoError(io::Error::new(
+                                        io::ErrorKind::Other,
+                                        "Problem emitting an event",
+                                    ))
+                                })
+                        } else {
+                            prev_result
+                        };
+                        future::ready(result)
+                    }))
+                    .boxed()
             }
 
             Command::Register { secret } => emit_event(Event::Registered { secret }).boxed(),
@@ -71,18 +87,8 @@ impl EventSourcedBehavior for Behavior {
         }
     }
 
-    fn on_event(_context: &Context, state: &mut Self::State, event: Self::Event) {
-        match event {
-            Event::Registered { secret } => {
-                state.secret = secret;
-            }
-            Event::TemperatureRead { temperature } => {
-                if state.history.len() == MAX_HISTORY_EVENTS {
-                    state.history.pop_front();
-                }
-                state.history.push_back(temperature);
-            }
-        }
+    fn on_event(context: &Context, state: &mut Self::State, event: Self::Event) {
+        state.on_event(context, event);
     }
 }
 
@@ -186,6 +192,7 @@ pub async fn task(
     secret_store: FileSecretStore,
     events_key_secret_path: String,
     command_receiver: mpsc::Receiver<Message<Command>>,
+    events: broadcast::Sender<(EntityId, Event)>,
 ) {
     // We register a compaction strategy for our topic such that when we use up
     // 64KB of disk space (the default), we will run compaction so that unwanted
@@ -213,7 +220,7 @@ pub async fn task(
     );
 
     entity_manager::run(
-        Behavior,
+        Behavior { events },
         file_log_topic_adapter,
         command_receiver,
         NonZeroUsize::new(10).unwrap(),

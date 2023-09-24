@@ -9,6 +9,8 @@ use async_trait::async_trait;
 use chrono::DateTime;
 use chrono::Utc;
 use lru::LruCache;
+use serde::Deserialize;
+use serde::Serialize;
 use std::io;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
@@ -20,7 +22,7 @@ use crate::entity::EventSourcedBehavior;
 use crate::{EntityId, Message};
 
 /// An envelope wraps an event associated with a specific entity.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct EventEnvelope<E> {
     /// Flags whether the associated event is to be considered
     /// as one that represents an entity instance being deleted.
