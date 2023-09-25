@@ -145,12 +145,6 @@ where
                 Box::pin(stream! {
                     while let Some(stream_out) = stream_outs.next().await {
                         if let Ok(proto::StreamOut{ message: Some(proto::stream_out::Message::Event(streamed_event)) }) = stream_out {
-                            // We don't deal with pub/sub
-
-                            if streamed_event.source == "PS" {
-                                continue;
-                            }
-
                             // If we can't parse the persistence id then we abort.
 
                             let Ok(persistence_id) = streamed_event.persistence_id.parse::<PersistenceId>() else { break };
