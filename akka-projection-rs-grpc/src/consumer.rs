@@ -168,7 +168,7 @@ where
                             let next_seq_nr = if let Ok(offset_store::State { last_seq_nr }) = reply_to_receiver.await {
                                 last_seq_nr.wrapping_add(1)
                             } else {
-                                seq_nr
+                                break
                             };
 
                             if seq_nr != next_seq_nr {
