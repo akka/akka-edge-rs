@@ -1,6 +1,9 @@
+use akka_persistence_rs::EntityId;
+use akka_persistence_rs::Message as EntityMessage;
 use akka_persistence_rs::Offset;
 use akka_persistence_rs::PersistenceId;
 use akka_persistence_rs::TimestampOffset;
+use akka_projection_rs::offset_store;
 use akka_projection_rs::SourceProvider;
 use async_stream::stream;
 use async_trait::async_trait;
@@ -12,6 +15,8 @@ use chrono::Utc;
 use prost::Message;
 use prost_types::Timestamp;
 use std::{future::Future, marker::PhantomData, ops::Range, pin::Pin};
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 use tonic::{transport::Uri, Request};
@@ -24,18 +29,24 @@ use crate::StreamId;
 pub struct GrpcSourceProvider<E> {
     delayer: Option<Delayer>,
     event_producer_addr: Uri,
+    offset_store: mpsc::Sender<EntityMessage<offset_store::Command>>,
     slice_range: Range<u32>,
     stream_id: StreamId,
     phantom: PhantomData<E>,
 }
 
 impl<E> GrpcSourceProvider<E> {
-    pub fn new(event_producer_addr: Uri, stream_id: StreamId) -> Self {
+    pub fn new(
+        event_producer_addr: Uri,
+        stream_id: StreamId,
+        offset_store: mpsc::Sender<EntityMessage<offset_store::Command>>,
+    ) -> Self {
         let slice_range = akka_persistence_rs::slice_ranges(1);
 
         Self::with_slice_range(
             event_producer_addr,
             stream_id,
+            offset_store,
             slice_range.get(0).cloned().unwrap(),
         )
     }
@@ -43,11 +54,13 @@ impl<E> GrpcSourceProvider<E> {
     pub fn with_slice_range(
         event_producer_addr: Uri,
         stream_id: StreamId,
+        offset_store: mpsc::Sender<EntityMessage<offset_store::Command>>,
         slice_range: Range<u32>,
     ) -> Self {
         Self {
             delayer: None,
             event_producer_addr,
+            offset_store,
             slice_range,
             stream_id,
             phantom: PhantomData,
@@ -122,15 +135,79 @@ where
                 }])
                 .chain(tokio_stream::pending()),
             );
+
             let result = connection.events_by_slices(request).await;
             if let Ok(response) = result {
+                let stream_offset_store = self.offset_store.clone();
+                let mut stream_connection = connection.clone();
+                let stream_stream_id = self.stream_id.to_string();
                 let mut stream_outs = response.into_inner();
                 Box::pin(stream! {
                     while let Some(stream_out) = stream_outs.next().await {
                         if let Ok(proto::StreamOut{ message: Some(proto::stream_out::Message::Event(streamed_event)) }) = stream_out {
+                            // If we can't parse the persistence id then we abort.
+
                             let Ok(persistence_id) = streamed_event.persistence_id.parse::<PersistenceId>() else { break };
 
+                            // Process the sequence number. If it isn't what we expect then we go round again.
+
                             let seq_nr = streamed_event.seq_nr as u64;
+
+                            let (reply_to, reply_to_receiver) = oneshot::channel();
+                            if stream_offset_store
+                                .send(EntityMessage::new(
+                                    EntityId::from(streamed_event.persistence_id.clone()),
+                                    offset_store::Command::Get { reply_to },
+                                ))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+
+                            let next_seq_nr = if let Ok(offset_store::State { last_seq_nr }) = reply_to_receiver.await {
+                                last_seq_nr.wrapping_add(1)
+                            } else {
+                                break
+                            };
+
+                            if seq_nr > next_seq_nr && streamed_event.source == "BT" {
+                                // This shouldn't happen, if so then abort.
+                                break;
+                            } else if seq_nr != next_seq_nr {
+                                // Duplicate or gap
+                                continue;
+                            }
+
+                            // If the sequence number is what we expect and the producer is backtracking, then
+                            // request its payload. If we can't get its payload then we abort as it is an error.
+
+                            let streamed_event = if streamed_event.source == "BT" {
+                                if let Ok(response) = stream_connection
+                                    .load_event(proto::LoadEventRequest {
+                                        stream_id: stream_stream_id.clone(),
+                                        persistence_id: persistence_id.to_string(),
+                                        seq_nr: seq_nr as i64,
+                                    })
+                                    .await
+                                {
+                                    if let Some(proto::load_event_response::Message::Event(event)) =
+                                        response.into_inner().message
+                                    {
+                                        Some(event)
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                Some(streamed_event)
+                            };
+
+                            let Some(streamed_event) = streamed_event else { break; };
+
+                            // Parse the event and abort if we can't.
 
                             let event = if let Some(payload) = streamed_event.payload {
                                 if !payload.type_url.starts_with("type.googleapis.com/") {
@@ -149,6 +226,8 @@ where
                             let seen = offset.seen.iter().flat_map(|pis| pis.persistence_id.parse().ok().map(|pid|(pid, pis.seq_nr as u64))).collect();
                             let offset = TimestampOffset { timestamp, seen };
 
+                            // All is well, so emit the event.
+
                             yield EventEnvelope {persistence_id, seq_nr, event, offset};
                         }
                     }
@@ -164,6 +243,8 @@ where
 
 #[cfg(test)]
 mod tests {
+
+    use crate::proto::load_event_response;
 
     use super::*;
     use akka_persistence_rs::{EntityId, EntityType, PersistenceId};
@@ -195,10 +276,11 @@ mod tests {
             Ok(Response::new(Box::pin(stream!({
                 let mut value = Vec::with_capacity(6);
                 0xffffffffu32.encode(&mut value).unwrap();
+
                 yield Ok(proto::StreamOut {
                     message: Some(proto::stream_out::Message::Event(proto::Event {
                         persistence_id: "entity-type|entity-id".to_string(),
-                        seq_nr: 1,
+                        seq_nr: 2,
                         slice: 0,
                         offset: Some(proto::Offset {
                             timestamp: Some(Timestamp {
@@ -217,29 +299,71 @@ mod tests {
                             type_url: String::from(
                                 "type.googleapis.com/google.protobuf.UInt32Value",
                             ),
-                            value,
+                            value: value.clone(),
                         }),
                         source: "".to_string(),
                         metadata: None,
                         tags: vec![],
                     })),
-                })
+                });
+
+                yield Ok(proto::StreamOut {
+                    message: Some(proto::stream_out::Message::Event(proto::Event {
+                        persistence_id: "entity-type|entity-id".to_string(),
+                        seq_nr: 1,
+                        slice: 0,
+                        offset: None,
+                        payload: None,
+                        source: "BT".to_string(),
+                        metadata: None,
+                        tags: vec![],
+                    })),
+                });
             }))))
         }
 
         async fn event_timestamp(
             &self,
-            _request: tonic::Request<proto::EventTimestampRequest>,
-        ) -> std::result::Result<tonic::Response<proto::EventTimestampResponse>, tonic::Status>
-        {
+            _request: Request<proto::EventTimestampRequest>,
+        ) -> Result<Response<proto::EventTimestampResponse>, Status> {
             todo!()
         }
 
         async fn load_event(
             &self,
-            _request: tonic::Request<proto::LoadEventRequest>,
-        ) -> std::result::Result<tonic::Response<proto::LoadEventResponse>, tonic::Status> {
-            todo!()
+            _request: Request<proto::LoadEventRequest>,
+        ) -> Result<Response<proto::LoadEventResponse>, Status> {
+            let mut value = Vec::with_capacity(6);
+            0xffffffffu32.encode(&mut value).unwrap();
+
+            Ok(Response::new(proto::LoadEventResponse {
+                message: Some(load_event_response::Message::Event(proto::Event {
+                    persistence_id: "entity-type|entity-id".to_string(),
+                    seq_nr: 1,
+                    slice: 0,
+                    offset: Some(proto::Offset {
+                        timestamp: Some(Timestamp {
+                            seconds: self.event_time.timestamp(),
+                            nanos: self.event_time.nanosecond() as i32,
+                        }),
+                        seen: self
+                            .event_seen_by
+                            .iter()
+                            .map(|(persistence_id, seq_nr)| proto::PersistenceIdSeqNr {
+                                persistence_id: persistence_id.to_string(),
+                                seq_nr: *seq_nr as i64,
+                            })
+                            .collect(),
+                    }),
+                    payload: Some(Any {
+                        type_url: String::from("type.googleapis.com/google.protobuf.UInt32Value"),
+                        value,
+                    }),
+                    source: "".to_string(),
+                    metadata: None,
+                    tags: vec![],
+                })),
+            }))
         }
     }
 
@@ -274,9 +398,24 @@ mod tests {
                 .unwrap();
         });
 
+        let (offset_store, mut offset_store_receiver) = mpsc::channel(10);
+        let task_persistence_id = persistence_id.clone();
+        tokio::spawn(async move {
+            while let Some(EntityMessage { entity_id, command }) =
+                offset_store_receiver.recv().await
+            {
+                if entity_id == task_persistence_id.to_string() {
+                    if let offset_store::Command::Get { reply_to } = command {
+                        let _ = reply_to.send(offset_store::State { last_seq_nr: 0 });
+                    }
+                }
+            }
+        });
+
         let mut source_provider = GrpcSourceProvider::<u32>::new(
             "http://127.0.0.1:50051".parse().unwrap(),
             StreamId::from("some-string-id"),
+            offset_store,
         );
 
         let mut tried = 0;

@@ -1,23 +1,26 @@
-//! Handle temperature sensor entity concerns
-//!
+// Handle temperature sensor entity concerns
+
 use std::{collections::VecDeque, num::NonZeroUsize, sync::Arc};
 
 use akka_persistence_rs::{
-    effect::{emit_event, reply, unhandled, EffectExt},
-    entity::EventSourcedBehavior,
+    effect::{emit_event, reply, unhandled, Effect, EffectExt},
+    entity::{Context, EventSourcedBehavior},
     entity_manager::{self},
     EntityId, Message,
 };
-use akka_persistence_rs_commitlog::{CommitLogEventEnvelopeMarshaler, CommitLogTopicAdapter};
+use akka_persistence_rs_commitlog::{
+    CommitLogMarshaler, CommitLogTopicAdapter, EncryptedCommitLogMarshaler, EventEnvelope,
+};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
-use streambed::commit_log::{Key, Topic};
+use streambed::commit_log::{ConsumerRecord, Key, ProducerRecord, Topic};
 use streambed_confidant::FileSecretStore;
 use streambed_logged::{compaction::NthKeyBasedRetention, FileLog};
 use tokio::sync::{mpsc, oneshot};
 
-// Declare the entity
+// Declare the entity and its behavior
 
 #[derive(Default)]
 pub struct State {
@@ -49,10 +52,10 @@ impl EventSourcedBehavior for Behavior {
     type Event = Event;
 
     fn for_command(
-        _context: &akka_persistence_rs::entity::Context,
+        _context: &Context,
         state: &Self::State,
         command: Self::Command,
-    ) -> Box<dyn akka_persistence_rs::effect::Effect<Self>> {
+    ) -> Box<dyn Effect<Self>> {
         match command {
             Command::Get { reply_to } if !state.secret.is_empty() => {
                 reply(reply_to, state.history.clone().into()).boxed()
@@ -68,11 +71,7 @@ impl EventSourcedBehavior for Behavior {
         }
     }
 
-    fn on_event(
-        _context: &akka_persistence_rs::entity::Context,
-        state: &mut Self::State,
-        event: Self::Event,
-    ) {
+    fn on_event(_context: &Context, state: &mut Self::State, event: Self::Event) {
         match event {
             Event::Registered { secret } => {
                 state.secret = secret;
@@ -113,10 +112,8 @@ const EVENT_TYPE_BIT_SHIFT: usize = 52;
 const EVENT_ID_BIT_MASK: u64 = 0xFFFFFFFF;
 
 #[async_trait]
-impl CommitLogEventEnvelopeMarshaler<Event> for EventEnvelopeMarshaler {
-    type SecretStore = FileSecretStore;
-
-    fn to_compaction_key(entity_id: &EntityId, event: &Event) -> Option<Key> {
+impl CommitLogMarshaler<Event> for EventEnvelopeMarshaler {
+    fn to_compaction_key(&self, entity_id: &EntityId, event: &Event) -> Option<Key> {
         let record_type = match event {
             Event::TemperatureRead { .. } => Some(0),
             Event::Registered { .. } => Some(1),
@@ -127,11 +124,37 @@ impl CommitLogEventEnvelopeMarshaler<Event> for EventEnvelopeMarshaler {
         })
     }
 
-    fn to_entity_id(record: &streambed::commit_log::ConsumerRecord) -> Option<EntityId> {
+    fn to_entity_id(&self, record: &streambed::commit_log::ConsumerRecord) -> Option<EntityId> {
         let entity_id = (record.key & EVENT_ID_BIT_MASK) as u32;
         let mut buffer = itoa::Buffer::new();
         Some(EntityId::from(buffer.format(entity_id)))
     }
+
+    async fn envelope(
+        &self,
+        entity_id: EntityId,
+        record: ConsumerRecord,
+    ) -> Option<EventEnvelope<Event>> {
+        self.decrypted_envelope(entity_id, record).await
+    }
+
+    /// Produce a producer record from an event and its entity info.
+    async fn producer_record(
+        &self,
+        topic: Topic,
+        entity_id: EntityId,
+        seq_nr: u64,
+        timestamp: DateTime<Utc>,
+        event: Event,
+    ) -> Option<ProducerRecord> {
+        self.encrypted_producer_record(topic, entity_id, seq_nr, timestamp, event)
+            .await
+    }
+}
+
+#[async_trait]
+impl EncryptedCommitLogMarshaler<Event> for EventEnvelopeMarshaler {
+    type SecretStore = FileSecretStore;
 
     fn secret_store(&self) -> &Self::SecretStore {
         &self.secret_store
@@ -142,10 +165,10 @@ impl CommitLogEventEnvelopeMarshaler<Event> for EventEnvelopeMarshaler {
     }
 }
 
-/// Where events are published in the commit log.
+// Where events are published in the commit log.
 pub const EVENTS_TOPIC: &str = "temperature";
 
-/// A namespace for our entity's events
+// A namespace for our entity's events
 pub const ENTITY_TYPE: &str = "Sensor";
 
 const MAX_HISTORY_EVENTS: usize = 10;
@@ -157,7 +180,7 @@ const MAX_HISTORY_EVENTS: usize = 10;
 // a production app.
 const MAX_TOPIC_COMPACTION_KEYS: usize = 1_000;
 
-/// Manage the temperature sensor.
+// Manage the temperature sensor.
 pub async fn task(
     mut commit_log: FileLog,
     secret_store: FileSecretStore,

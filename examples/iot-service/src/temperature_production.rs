@@ -1,5 +1,4 @@
-//! Handle temperature projection concerns
-//!
+// Handle temperature projection concerns
 
 use crate::proto;
 use crate::temperature::{self, EventEnvelopeMarshaler};
@@ -16,7 +15,7 @@ use streambed_logged::FileLog;
 use tokio::sync::{mpsc, oneshot};
 use tonic::transport::Uri;
 
-/// Apply sensor observations to a remote consumer.
+// Apply sensor observations to a remote consumer.
 pub async fn task(
     commit_log: FileLog,
     event_consumer_addr: Uri,

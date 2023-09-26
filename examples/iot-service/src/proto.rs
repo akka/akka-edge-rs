@@ -1,3 +1,5 @@
+// Protobuf concerns.
+
 use prost::Name;
 
 include!(concat!(env!("OUT_DIR"), "/iot.registration.rs"));

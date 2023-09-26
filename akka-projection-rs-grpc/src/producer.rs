@@ -195,7 +195,7 @@ pub async fn run<E>(
                 while let Some(envelope) = event_in_receiver.recv().await {
                     let timestamp = prost_types::Timestamp {
                         seconds: envelope.offset.timestamp.timestamp(),
-                        nanos: envelope.offset.timestamp.timestamp_nanos() as i32
+                        nanos: envelope.offset.timestamp.timestamp_nanos_opt().unwrap_or_default() as i32
                     };
 
                     if let Some(event) = envelope.event {
