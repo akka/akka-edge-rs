@@ -171,13 +171,12 @@ where
                                 break
                             };
 
-                            if seq_nr != next_seq_nr {
+                            if seq_nr > next_seq_nr && streamed_event.source == "BT" {
                                 // This shouldn't happen, if so then abort.
-                                if streamed_event.source == "BT" && seq_nr > next_seq_nr {
-                                    break;
-                                } else {
-                                    continue;
-                                }
+                                break;
+                            } else if seq_nr != next_seq_nr {
+                                // Duplicate or gap
+                                continue;
                             }
 
                             // If the sequence number is what we expect and the producer is backtracking, then
