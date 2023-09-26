@@ -13,7 +13,7 @@ use streambed::commit_log::Topic;
 use streambed_confidant::FileSecretStore;
 use streambed_logged::FileLog;
 use tokio::sync::{mpsc, oneshot};
-use tonic::transport::Uri;
+use tonic::transport::{Channel, Uri};
 
 // Apply sensor observations to a remote consumer.
 pub async fn task(
@@ -35,8 +35,9 @@ pub async fn task(
 
     let (_task_kill_switch, task_kill_switch_receiver) = oneshot::channel();
     tokio::spawn(async {
+        let channel = Channel::builder(event_consumer_addr);
         akka_projection_rs_grpc::producer::run(
-            event_consumer_addr,
+            || channel.connect(),
             OriginId::from("edge-iot-service"),
             StreamId::from("temperature-events"),
             grpc_producer_receiver,

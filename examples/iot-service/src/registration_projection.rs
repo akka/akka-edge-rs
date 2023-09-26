@@ -7,6 +7,7 @@ use std::{path::PathBuf, time::Duration};
 use streambed_confidant::FileSecretStore;
 use streambed_logged::FileLog;
 use tokio::sync::{mpsc, oneshot};
+use tonic::transport::Channel;
 use tonic::transport::Uri;
 
 use crate::registration;
@@ -48,7 +49,8 @@ pub async fn task(
         .await
     });
 
-    let source_provider = GrpcSourceProvider::new(event_producer_addr, stream_id, offset_store);
+    let channel = Channel::builder(event_producer_addr);
+    let source_provider = GrpcSourceProvider::new(|| channel.connect(), stream_id, offset_store);
 
     // Declare a handler to forward projection events on to the temperature entity.
 
