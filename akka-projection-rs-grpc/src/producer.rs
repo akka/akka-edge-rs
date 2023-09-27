@@ -21,7 +21,8 @@ use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
-use tonic::{transport::Uri, Request};
+use tonic::transport::Channel;
+use tonic::Request;
 
 use crate::delayer::Delayer;
 use crate::proto;
@@ -137,14 +138,16 @@ type Context<E> = (EventEnvelope<E>, oneshot::Sender<()>);
 /// Reliably stream event envelopes to a consumer. Event envelope transmission
 /// requests are sent over a channel and have a reply that is completed on the
 /// remote consumer's acknowledgement of receipt.
-pub async fn run<E>(
-    event_consumer_addr: Uri,
+pub async fn run<E, EC, ECR>(
+    event_consumer_channel: EC,
     origin_id: StreamId,
     stream_id: StreamId,
     mut envelopes: mpsc::Receiver<(EventEnvelope<E>, oneshot::Sender<()>)>,
     mut kill_switch: oneshot::Receiver<()>,
 ) where
     E: Clone + Name + 'static,
+    EC: Fn() -> ECR + Send + Sync,
+    ECR: Future<Output = Result<Channel, tonic::transport::Error>> + Send,
 {
     let mut delayer: Option<Delayer> = None;
 
@@ -155,11 +158,9 @@ pub async fn run<E>(
             break;
         }
 
-        let mut connection = if let Ok(connection) =
-            proto::event_consumer_service_client::EventConsumerServiceClient::connect(
-                event_consumer_addr.clone(),
-            )
+        let mut connection = if let Ok(connection) = (event_consumer_channel)()
             .await
+            .map(proto::event_consumer_service_client::EventConsumerServiceClient::new)
         {
             delayer = None;
             Some(connection)
@@ -410,8 +411,9 @@ mod tests {
         let (sender, receiver) = mpsc::channel(10);
         let (_task_kill_switch, task_kill_switch_receiver) = oneshot::channel();
         tokio::spawn(async move {
+            let channel = Channel::from_static("http://127.0.0.1:50052");
             let _ = run(
-                "http://127.0.0.1:50052".parse().unwrap(),
+                || channel.connect(),
                 OriginId::from("some-origin-id"),
                 StreamId::from("some-stream-id"),
                 receiver,

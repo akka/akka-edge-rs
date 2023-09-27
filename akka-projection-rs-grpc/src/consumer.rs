@@ -19,32 +19,37 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt;
-use tonic::{transport::Uri, Request};
+use tonic::transport::Channel;
+use tonic::Request;
 
 use crate::delayer::Delayer;
 use crate::proto;
 use crate::EventEnvelope;
 use crate::StreamId;
 
-pub struct GrpcSourceProvider<E> {
+pub struct GrpcSourceProvider<E, EP> {
     delayer: Option<Delayer>,
-    event_producer_addr: Uri,
+    event_producer_channel: EP,
     offset_store: mpsc::Sender<EntityMessage<offset_store::Command>>,
     slice_range: Range<u32>,
     stream_id: StreamId,
     phantom: PhantomData<E>,
 }
 
-impl<E> GrpcSourceProvider<E> {
+impl<E, EP, EPR> GrpcSourceProvider<E, EP>
+where
+    EP: Fn() -> EPR,
+    EPR: Future<Output = Result<Channel, tonic::transport::Error>>,
+{
     pub fn new(
-        event_producer_addr: Uri,
+        event_producer_channel: EP,
         stream_id: StreamId,
         offset_store: mpsc::Sender<EntityMessage<offset_store::Command>>,
     ) -> Self {
         let slice_range = akka_persistence_rs::slice_ranges(1);
 
         Self::with_slice_range(
-            event_producer_addr,
+            event_producer_channel,
             stream_id,
             offset_store,
             slice_range.get(0).cloned().unwrap(),
@@ -52,14 +57,14 @@ impl<E> GrpcSourceProvider<E> {
     }
 
     pub fn with_slice_range(
-        event_producer_addr: Uri,
+        event_producer_channel: EP,
         stream_id: StreamId,
         offset_store: mpsc::Sender<EntityMessage<offset_store::Command>>,
         slice_range: Range<u32>,
     ) -> Self {
         Self {
             delayer: None,
-            event_producer_addr,
+            event_producer_channel,
             offset_store,
             slice_range,
             stream_id,
@@ -69,9 +74,11 @@ impl<E> GrpcSourceProvider<E> {
 }
 
 #[async_trait]
-impl<E> SourceProvider for GrpcSourceProvider<E>
+impl<E, EP, EPR> SourceProvider for GrpcSourceProvider<E, EP>
 where
     E: Default + Message + Send + Sync,
+    EP: Fn() -> EPR + Send + Sync,
+    EPR: Future<Output = Result<Channel, tonic::transport::Error>> + Send,
 {
     type Envelope = EventEnvelope<E>;
 
@@ -83,11 +90,9 @@ where
         F: Fn() -> FR + Send + Sync,
         FR: Future<Output = Option<Offset>> + Send,
     {
-        let connection = if let Ok(connection) =
-            proto::event_producer_service_client::EventProducerServiceClient::connect(
-                self.event_producer_addr.clone(),
-            )
+        let connection = if let Ok(connection) = (self.event_producer_channel)()
             .await
+            .map(proto::event_producer_service_client::EventProducerServiceClient::new)
         {
             self.delayer = None;
             Some(connection)
@@ -412,8 +417,9 @@ mod tests {
             }
         });
 
-        let mut source_provider = GrpcSourceProvider::<u32>::new(
-            "http://127.0.0.1:50051".parse().unwrap(),
+        let channel = Channel::from_static("http://127.0.0.1:50051");
+        let mut source_provider = GrpcSourceProvider::<u32, _>::new(
+            || channel.connect(),
             StreamId::from("some-string-id"),
             offset_store,
         );
