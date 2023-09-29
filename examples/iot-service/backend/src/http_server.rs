@@ -39,14 +39,13 @@ pub fn routes(
                 let event_stream = stream!({
                     let entity_id = EntityId::from(entity_id);
                     let (reply_to, reply) = oneshot::channel();
-                    if task_temperature_command
+                    let result = task_temperature_command
                         .send(Message::new(
                             entity_id.clone(),
                             temperature::Command::Get { reply_to },
                         ))
-                        .await
-                        .is_ok()
-                    {
+                        .await;
+                    if result.is_ok() {
                         if let Ok(state) = reply.await {
                             yield Event::default().id(entity_id.clone()).json_data(
                                 temperature::Event::Registered {
