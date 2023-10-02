@@ -1,0 +1,21 @@
+[package]
+name = "iot-service-model"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+smol_str = { workspace = true }
+tokio = { workspace = true, features = [
+    "sync",
+    "macros",
+    "io-util",
+    "rt",
+    "time",
+] }
+
+akka-persistence-rs = { path = "../../../akka-persistence-rs" }
+
+[dev-dependencies]
+env_logger = { workspace = true }
+test-log = { workspace = true }

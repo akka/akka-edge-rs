@@ -7,6 +7,10 @@ to a commit log. A simple HTTP API is provided to query and scan the commit log.
 is the use of the Akka Persistence Entity Manager in place of the `Database` struct that
 the Streambed example uses, and the integration with the [iot-service](https://github.com/akka/akka-projection/tree/main/samples/grpc/iot-service-scala) of Akka projections.
 
+There is also a user interface written in Rust that illustrates
+how akka-edge-rs can also run in the browser. To achieve this, we use [Webassembly](https://webassembly.org/) and
+a React-like framework known as [Yew](https://yew.rs/).
+
 In terms of roles and responsibilities, the JVM service is responsible for registering sensors. The
 Rust service will connect to the JVM service and consume these registration events as they occur. The Rust
 service will also remember where it is up to and, in the case of a restart, it will re-connect and consume
@@ -22,7 +26,7 @@ The example requires running the JVM [iot-service](https://github.com/akka/akka-
 Running
 ---
 
-To run via cargo, first `cd` into this directory and then:
+To run via cargo, first `cd` into the `backend` directory and then:
 
 ```
 mkdir -p /tmp/iot-service/var/lib/confidant
@@ -40,10 +44,10 @@ of authentication where, in the real-world, a shared key between the device and 
 would be conveyed. That key would then be used to encrypt data. We simply use the key
 as a registration mechanism and do not accept data for devices where we have no key.
 
-Let's first query for a sensor's data... it will fail as we have no sensors yet:
+Let's first query for a sensor's data... it will return an empty stream as we have no sensors yet:
 
 ```
-curl -v "127.0.0.1:8080/api/temperature/1"
+curl -v "127.0.0.1:8080/api/temperature/events/1"
 ```
 
 So, let's now provision one. To do this, we must start up the JVM-based iot-service. Please
@@ -55,13 +59,14 @@ grpcurl -d '{"sensor_entity_id":"1", "secret":"foo"}' -plaintext 127.0.0.1:8101 
 ```
 
 You should now be able to query for the current state of a temperature sensor, although
-they'll be no observations recorded for it yet:
+they'll be no observations recorded for it yet, so it will still be an empty stream. However,
+this time it is waiting on events.
 
 ```
-curl -v "127.0.0.1:8080/api/temperature/1"
+curl -v "127.0.0.1:8080/api/temperature/events/1"
 ```
 
-Let's now post database events to the UDP socket so that the sensor has observations. Note that
+From another terminal, let's now post database events to the UDP socket so that the sensor has observations. Note that
 we're using Postcard to deserialize binary data. Postcard uses variable length
 integers where the top bit, when set, indicates that the next byte also contains
 data. See [Postcard](https://docs.rs/postcard/latest/postcard/) for more details.
@@ -70,12 +75,8 @@ data. See [Postcard](https://docs.rs/postcard/latest/postcard/) for more details
 echo -n -e "\x01\x02" | nc -w0 127.0.0.1 -u 8081
 ```
 
-You should see a `DEBUG` log indicating that the post has been received. And
-also be able to query the database again with the id that was sent (`1`):
-
-```
-curl -v "127.0.0.1:8080/api/temperature/1"
-```
+You should see a `DEBUG` log indicating that the post has been received. You will also see events
+appearing from the above curl command.
 
 Back over in the JVM iot-service, you should also see these temperature observations
 appear in its log, and you can retrieve the latest observation with:
@@ -84,3 +85,11 @@ appear in its log, and you can retrieve the latest observation with:
 grpcurl -d '{"sensor_entity_id":"1"}' -plaintext 127.0.0.1:8101 iot.temperature.SensorTwinService.GetTemperature
 ```
 
+Now let's run the user interface. `cd` into the `frontend` directory, which is at the same level
+as the `backend` directory. Please follow [Yew's getting started guide](https://yew.rs/docs/getting-started/introduction)
+to install `trunk` along with the Rust Webassembly target. Then:
+
+`trunk serve`
+
+.. and then navigate to http://localhost:8081/. Looking up entity `1` will display the temperature observations
+that have been sent over UDP.

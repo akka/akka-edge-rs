@@ -16,7 +16,7 @@ use streambed_confidant::{args::SsArgs, FileSecretStore};
 use streambed_logged::{args::CommitLogArgs, FileLog};
 use tokio::{
     net::UdpSocket,
-    sync::{mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot},
 };
 use tonic::transport::Uri;
 
@@ -54,7 +54,8 @@ struct Args {
     udp_addr: SocketAddr,
 }
 
-const MAX_TEMPERATURE_MANAGER_COMMANDS: usize = 10;
+const MAX_TEMPERATURE_COMMANDS: usize = 10;
+const MAX_TEMPERATURE_EVENTS: usize = 10;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -113,7 +114,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Establish channels for the temperature
     let (temperature_command, temperature_command_receiver) =
-        mpsc::channel(MAX_TEMPERATURE_MANAGER_COMMANDS);
+        mpsc::channel(MAX_TEMPERATURE_COMMANDS);
+    let (temperature_events, _) = broadcast::channel(MAX_TEMPERATURE_EVENTS);
 
     // Establish channels for the registration projection
     let (_registration_kill_switch, registration_kill_switch_receiver) = oneshot::channel();
@@ -122,7 +124,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (_temperature_kill_switch, temperature_kill_switch_receiver) = oneshot::channel();
 
     // Start up the http service
-    let routes = http_server::routes(temperature_command.clone());
+    let routes = http_server::routes(temperature_command.clone(), temperature_events.clone());
     tokio::spawn(warp::serve(routes).run(args.http_addr));
     info!("HTTP listening on {}", args.http_addr);
 
@@ -164,6 +166,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ss,
         temperature_events_key_secret_path,
         temperature_command_receiver,
+        temperature_events,
     ))
     .await?;
 
