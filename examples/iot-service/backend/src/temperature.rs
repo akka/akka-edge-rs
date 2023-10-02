@@ -55,8 +55,11 @@ impl EventSourcedBehavior for Behavior {
             Command::Post { temperature } if !state.secret.is_empty() => {
                 let broadcast_entity_id = context.entity_id.clone();
                 let broadcast_temperature = temperature;
-                emit_event(Event::TemperatureRead { temperature })
-                    .and(then(move |behavior: &Self, _new_state, prev_result| {
+
+                let broadcast_event =
+                    move |behavior: &Self,
+                          _new_state: Option<&State>,
+                          prev_result: effect::Result| {
                         let result = if prev_result.is_ok() {
                             behavior
                                 .events
@@ -77,7 +80,10 @@ impl EventSourcedBehavior for Behavior {
                             prev_result
                         };
                         future::ready(result)
-                    }))
+                    };
+
+                emit_event(Event::TemperatureRead { temperature })
+                    .and(then(broadcast_event))
                     .boxed()
             }
 
