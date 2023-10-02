@@ -23,7 +23,7 @@ const MAX_SSE_CONNECTION_TIME: Duration = Duration::from_secs(60);
 // Declares routes to serve our HTTP interface.
 pub fn routes(
     temperature_command: mpsc::Sender<Message<temperature::Command>>,
-    temperature_events: broadcast::Sender<(EntityId, temperature::Event)>,
+    temperature_events: broadcast::Sender<temperature::BroadcastEvent>,
 ) -> impl Filter<Extract = (impl Reply,), Error = Rejection> + Clone {
     let get_temperature_route = {
         warp::get()
@@ -58,8 +58,10 @@ pub fn routes(
                                     .json_data(temperature::Event::TemperatureRead { temperature });
                             }
 
-                            while let Ok((event_entity_id, event)) =
-                                temperature_events_receiver.recv().await
+                            while let Ok(temperature::BroadcastEvent::Saved {
+                                entity_id: event_entity_id,
+                                event,
+                            }) = temperature_events_receiver.recv().await
                             {
                                 if event_entity_id == entity_id {
                                     yield Event::default().json_data(event);

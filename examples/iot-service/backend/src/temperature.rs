@@ -31,8 +31,14 @@ pub enum Command {
     Register { secret: SecretDataValue },
 }
 
+#[derive(Clone)]
+pub enum BroadcastEvent {
+    Saved { entity_id: EntityId, event: Event },
+    NotSaved { entity_id: EntityId },
+}
+
 pub struct Behavior {
-    events: broadcast::Sender<(EntityId, Event)>,
+    events: broadcast::Sender<BroadcastEvent>,
 }
 
 impl EventSourcedBehavior for Behavior {
@@ -63,12 +69,12 @@ impl EventSourcedBehavior for Behavior {
                         let result = if prev_result.is_ok() {
                             behavior
                                 .events
-                                .send((
-                                    broadcast_entity_id,
-                                    Event::TemperatureRead {
+                                .send(BroadcastEvent::Saved {
+                                    entity_id: broadcast_entity_id,
+                                    event: Event::TemperatureRead {
                                         temperature: broadcast_temperature,
                                     },
-                                ))
+                                })
                                 .map(|_| ())
                                 .map_err(|_| {
                                     effect::Error::IoError(io::Error::new(
@@ -77,6 +83,9 @@ impl EventSourcedBehavior for Behavior {
                                     ))
                                 })
                         } else {
+                            let _ = behavior.events.send(BroadcastEvent::NotSaved {
+                                entity_id: broadcast_entity_id,
+                            });
                             prev_result
                         };
                         future::ready(result)
@@ -198,7 +207,7 @@ pub async fn task(
     secret_store: FileSecretStore,
     events_key_secret_path: String,
     command_receiver: mpsc::Receiver<Message<Command>>,
-    events: broadcast::Sender<(EntityId, Event)>,
+    events: broadcast::Sender<BroadcastEvent>,
 ) {
     // We register a compaction strategy for our topic such that when we use up
     // 64KB of disk space (the default), we will run compaction so that unwanted
