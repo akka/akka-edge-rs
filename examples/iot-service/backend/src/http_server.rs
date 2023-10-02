@@ -58,13 +58,24 @@ pub fn routes(
                                     .json_data(temperature::Event::TemperatureRead { temperature });
                             }
 
-                            while let Ok(temperature::BroadcastEvent::Saved {
-                                entity_id: event_entity_id,
-                                event,
-                            }) = temperature_events_receiver.recv().await
-                            {
-                                if event_entity_id == entity_id {
-                                    yield Event::default().json_data(event);
+                            loop {
+                                match temperature_events_receiver.recv().await {
+                                    Ok(temperature::BroadcastEvent::Saved {
+                                        entity_id: event_entity_id,
+                                        event,
+                                    }) => {
+                                        if event_entity_id == entity_id {
+                                            yield Event::default().json_data(event);
+                                        }
+                                    }
+                                    Ok(temperature::BroadcastEvent::NotSaved {
+                                        entity_id: event_entity_id,
+                                    }) => {
+                                        if event_entity_id == entity_id {
+                                            break;
+                                        }
+                                    }
+                                    Err(_) => break,
                                 }
                             }
                         }
