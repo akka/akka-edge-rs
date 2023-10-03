@@ -7,6 +7,7 @@ edition = "2021"
 async-trait = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
+smol_str = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 

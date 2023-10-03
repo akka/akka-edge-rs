@@ -3,6 +3,7 @@ use akka_persistence_rs::Message as EntityMessage;
 use akka_persistence_rs::Offset;
 use akka_persistence_rs::PersistenceId;
 use akka_persistence_rs::TimestampOffset;
+use akka_projection_rs::consumer_filter::FilterCriteria;
 use akka_projection_rs::offset_store;
 use akka_projection_rs::SourceProvider;
 use async_stream::stream;
@@ -30,6 +31,7 @@ use crate::StreamId;
 pub struct GrpcSourceProvider<E, EP> {
     delayer: Option<Delayer>,
     event_producer_channel: EP,
+    initial_consumer_filter: Vec<proto::FilterCriteria>,
     offset_store: mpsc::Sender<EntityMessage<offset_store::Command>>,
     slice_range: Range<u32>,
     stream_id: StreamId,
@@ -65,11 +67,23 @@ where
         Self {
             delayer: None,
             event_producer_channel,
+            initial_consumer_filter: vec![],
             offset_store,
             slice_range,
             stream_id,
             phantom: PhantomData,
         }
+    }
+
+    pub fn with_initial_consumer_filter(
+        mut self,
+        initial_consumer_filter: Vec<FilterCriteria>,
+    ) -> Self {
+        self.initial_consumer_filter = initial_consumer_filter
+            .into_iter()
+            .map(|f| f.into())
+            .collect();
+        self
     }
 }
 
@@ -135,7 +149,7 @@ where
                         slice_min: self.slice_range.start as i32,
                         slice_max: self.slice_range.end as i32 - 1,
                         offset,
-                        filter: vec![],
+                        filter: self.initial_consumer_filter.clone(),
                     })),
                 }])
                 .chain(tokio_stream::pending()),
@@ -253,6 +267,7 @@ mod tests {
 
     use super::*;
     use akka_persistence_rs::{EntityId, EntityType, PersistenceId};
+    use akka_projection_rs::consumer_filter::EntityIdOffset;
     use async_stream::stream;
     use chrono::{DateTime, Utc};
     use prost_types::Any;
@@ -422,7 +437,13 @@ mod tests {
             || channel.connect(),
             StreamId::from("some-string-id"),
             offset_store,
-        );
+        )
+        .with_initial_consumer_filter(vec![FilterCriteria::IncludeEntityIds {
+            entity_id_offsets: vec![EntityIdOffset {
+                entity_id: entity_id.clone(),
+                seq_nr: 0,
+            }],
+        }]);
 
         let mut tried = 0;
 
