@@ -90,3 +90,11 @@ pub enum FilterCriteria {
     /// Remove a previously added `IncludeTopics`.
     RemoveIncludeTopics { expressions: Vec<TopicMatcher> },
 }
+
+/// Exclude events from all entity ids, convenience for combining with for example a topic filter
+/// to include only events matching the topic filter.
+pub fn exclude_all() -> FilterCriteria {
+    FilterCriteria::ExcludeRegexEntityIds {
+        matching: vec![EntityIdMatcher::from(".*")],
+    }
+}
