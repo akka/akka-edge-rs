@@ -28,6 +28,7 @@
 use akka_persistence_rs::EntityId;
 use smol_str::SmolStr;
 
+#[derive(Clone)]
 pub struct EntityIdOffset {
     pub entity_id: EntityId,
     // If this is defined (> 0) events are replayed from the given
@@ -48,6 +49,7 @@ pub type TopicMatcher = SmolStr;
 /// If an exclude criteria is matching the include criteria are evaluated.
 ///   If no matching include criteria the event is discarded.
 ///   If matching include criteria the event is emitted.
+#[derive(Clone)]
 pub enum FilterCriteria {
     /// Exclude events with any of the given tags, unless there is a
     /// matching include filter that overrides the exclude.
