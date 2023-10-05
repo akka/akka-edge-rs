@@ -5,10 +5,13 @@ use akka_persistence_rs::TimestampOffset;
 use akka_persistence_rs::WithEntityId;
 use akka_persistence_rs::WithSeqNr;
 use akka_persistence_rs::WithTimestampOffset;
+use akka_projection_rs::consumer_filter;
+use akka_projection_rs::consumer_filter::FilterCriteria;
 use akka_projection_rs::HandlerError;
 use akka_projection_rs::PendingHandler;
 use async_stream::stream;
 use async_trait::async_trait;
+use futures::future;
 use log::debug;
 use log::warn;
 use prost::Name;
@@ -20,6 +23,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tokio_stream::StreamExt;
 use tonic::transport::Channel;
 use tonic::Request;
@@ -45,6 +49,7 @@ where
     F: Fn(&EI) -> Option<E>,
 {
     producer: GrpcEventProducer<E>,
+    consumer_filters_receiver: watch::Receiver<Vec<FilterCriteria>>,
     transformer: F,
     phantom: PhantomData<EI>,
 }
@@ -64,7 +69,14 @@ where
         &mut self,
         envelope: Self::Envelope,
     ) -> Result<Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>>, HandlerError> {
-        let event = (self.transformer)(&envelope);
+        let event = if consumer_filter::matches(&envelope, &self.consumer_filters_receiver.borrow())
+        {
+            (self.transformer)(&envelope)
+        } else {
+            // Gaps are ok given a filter situation.
+            return Ok(Box::pin(future::ready(Ok(()))));
+        };
+
         let transformation = Transformation {
             entity_id: envelope.entity_id(),
             seq_nr: envelope.seq_nr(),
@@ -99,12 +111,17 @@ impl<E> GrpcEventProducer<E> {
         }
     }
 
-    pub fn handler<EI, F>(self, transformer: F) -> GrpcEventProcessor<E, EI, F>
+    pub fn handler<EI, F>(
+        self,
+        consumer_filters_receiver: watch::Receiver<Vec<FilterCriteria>>,
+        transformer: F,
+    ) -> GrpcEventProcessor<E, EI, F>
     where
         F: Fn(&EI) -> Option<E>,
     {
         GrpcEventProcessor {
             producer: self,
+            consumer_filters_receiver,
             transformer,
             phantom: PhantomData,
         }
@@ -142,6 +159,7 @@ pub async fn run<E, EC, ECR>(
     event_consumer_channel: EC,
     origin_id: StreamId,
     stream_id: StreamId,
+    consumer_filters: watch::Sender<Vec<FilterCriteria>>,
     mut envelopes: mpsc::Receiver<(EventEnvelope<E>, oneshot::Sender<()>)>,
     mut kill_switch: oneshot::Receiver<()>,
 ) where
@@ -241,8 +259,9 @@ pub async fn run<E, EC, ECR>(
                         Some(Ok(proto::ConsumeEventOut {
                             message: Some(message),
                         })) = stream_outs.next() => match message {
-                            proto::consume_event_out::Message::Start(proto::ConsumerEventStart { .. }) => {
+                            proto::consume_event_out::Message::Start(proto::ConsumerEventStart { filter }) => {
                                 debug!("Starting the protocol");
+                                consumer_filters.send(filter.into_iter().flat_map(|f| f.try_into()).collect()).unwrap();
                                 break;
                             }
                             _ => {
@@ -408,6 +427,7 @@ mod tests {
                 .unwrap();
         });
 
+        let (consumer_filters, _) = watch::channel(vec![]);
         let (sender, receiver) = mpsc::channel(10);
         let (_task_kill_switch, task_kill_switch_receiver) = oneshot::channel();
         tokio::spawn(async move {
@@ -416,6 +436,7 @@ mod tests {
                 || channel.connect(),
                 OriginId::from("some-origin-id"),
                 StreamId::from("some-stream-id"),
+                consumer_filters,
                 receiver,
                 task_kill_switch_receiver,
             )

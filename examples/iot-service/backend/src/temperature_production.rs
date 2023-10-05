@@ -12,7 +12,7 @@ use std::{path::PathBuf, time::Duration};
 use streambed::commit_log::Topic;
 use streambed_confidant::FileSecretStore;
 use streambed_logged::FileLog;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tonic::transport::{Channel, Uri};
 
 // Apply sensor observations to a remote consumer.
@@ -28,6 +28,7 @@ pub async fn task(
     // Establish a sink of envelopes that will be forwarded
     // on to a consumer via gRPC event producer.
 
+    let (consumer_filters, consumer_filters_receiver) = watch::channel(vec![]);
     let (grpc_producer, grpc_producer_receiver) = mpsc::channel(10);
 
     let grpc_producer =
@@ -40,6 +41,7 @@ pub async fn task(
             || channel.connect(),
             OriginId::from("edge-iot-service"),
             StreamId::from("temperature-events"),
+            consumer_filters,
             grpc_producer_receiver,
             task_kill_switch_receiver,
         )
@@ -89,7 +91,7 @@ pub async fn task(
         &state_storage_path,
         kill_switch,
         source_provider,
-        grpc_producer.handler(transformer),
+        grpc_producer.handler(consumer_filters_receiver, transformer),
         Duration::from_millis(100),
     )
     .await

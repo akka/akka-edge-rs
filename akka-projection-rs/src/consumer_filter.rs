@@ -25,7 +25,7 @@
 //! * IncludeRegexEntityIds - include events for entities with entity ids matching the given regular expressions
 //! * IncludeEntityIds - include events for entities with the given entity ids
 
-use akka_persistence_rs::EntityId;
+use akka_persistence_rs::{EntityId, WithEntityId};
 use smol_str::SmolStr;
 
 #[derive(Clone)]
@@ -99,4 +99,13 @@ pub fn exclude_all() -> FilterCriteria {
     FilterCriteria::ExcludeRegexEntityIds {
         matching: vec![EntityIdMatcher::from(".*")],
     }
+}
+
+/// A function that matches an envelope with criteria and passes it through if matched.
+pub fn matches<E>(_envelope: &E, _consumer_filters: &[FilterCriteria]) -> bool
+where
+    E: WithEntityId,
+{
+    // TODO
+    todo!()
 }
