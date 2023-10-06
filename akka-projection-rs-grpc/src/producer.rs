@@ -48,7 +48,7 @@ pub struct GrpcEventProcessor<E, EI, F>
 where
     F: Fn(&EI) -> Option<E>,
 {
-    producer: GrpcEventProducer<E>,
+    flow: GrpcEventFlow<E>,
     consumer_filters_receiver: watch::Receiver<Vec<FilterCriteria>>,
     transformer: F,
     phantom: PhantomData<EI>,
@@ -83,7 +83,7 @@ where
             offset: envelope.timestamp_offset(),
             event,
         };
-        let result = self.producer.process(transformation).await;
+        let result = self.flow.process(transformation).await;
         if let Ok(receiver_reply) = result {
             Ok(Box::pin(async {
                 receiver_reply.await.map_err(|_| HandlerError)
@@ -94,13 +94,13 @@ where
     }
 }
 
-/// Produce gRPC events given a user-supplied transformation function.
-pub struct GrpcEventProducer<E> {
+/// Transform and forward gRPC events given a user-supplied transformation function.
+pub struct GrpcEventFlow<E> {
     entity_type: EntityType,
     grpc_producer: mpsc::Sender<(EventEnvelope<E>, oneshot::Sender<()>)>,
 }
 
-impl<E> GrpcEventProducer<E> {
+impl<E> GrpcEventFlow<E> {
     pub fn new(
         entity_type: EntityType,
         grpc_producer: mpsc::Sender<(EventEnvelope<E>, oneshot::Sender<()>)>,
@@ -120,7 +120,7 @@ impl<E> GrpcEventProducer<E> {
         F: Fn(&EI) -> Option<E>,
     {
         GrpcEventProcessor {
-            producer: self,
+            flow: self,
             consumer_filters_receiver,
             transformer,
             phantom: PhantomData,

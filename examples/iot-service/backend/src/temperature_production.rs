@@ -5,7 +5,7 @@ use crate::temperature::{self, EventEnvelopeMarshaler};
 use akka_persistence_rs::EntityType;
 use akka_persistence_rs_commitlog::EventEnvelope as CommitLogEventEnvelope;
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
-use akka_projection_rs_grpc::producer::GrpcEventProducer;
+use akka_projection_rs_grpc::producer::GrpcEventFlow;
 use akka_projection_rs_grpc::{OriginId, StreamId};
 use std::sync::Arc;
 use std::{path::PathBuf, time::Duration};
@@ -31,8 +31,7 @@ pub async fn task(
     let (consumer_filters, consumer_filters_receiver) = watch::channel(vec![]);
     let (grpc_producer, grpc_producer_receiver) = mpsc::channel(10);
 
-    let grpc_producer =
-        GrpcEventProducer::new(EntityType::from(temperature::ENTITY_TYPE), grpc_producer);
+    let grpc_flow = GrpcEventFlow::new(EntityType::from(temperature::ENTITY_TYPE), grpc_producer);
 
     let (_task_kill_switch, task_kill_switch_receiver) = oneshot::channel();
     tokio::spawn(async {
@@ -80,7 +79,7 @@ pub async fn task(
     // to remember the offset consumed from the commit log. This then
     // permits us to restart from a specific point in the source given
     // restarts.
-    // A handler is formed from the gRPC producer. This handler will
+    // A handler is formed from the gRPC flow. This handler will
     // call upon the transformer function to, in turn, produce the
     // gRPC events to a remote consumer. The handler is a "flowing" one
     // where an upper limit of the number of envelopes in-flight is set.
@@ -91,7 +90,7 @@ pub async fn task(
         &state_storage_path,
         kill_switch,
         source_provider,
-        grpc_producer.handler(consumer_filters_receiver, transformer),
+        grpc_flow.handler(consumer_filters_receiver, transformer),
         Duration::from_millis(100),
     )
     .await
