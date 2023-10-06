@@ -11,8 +11,10 @@ chrono = { workspace = true }
 exponential-backoff = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
+mqtt-protocol = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
+regex = { workspace = true }
 smol_str = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

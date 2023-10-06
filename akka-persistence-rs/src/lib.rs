@@ -9,20 +9,34 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 
 pub mod effect;
 pub mod entity;
 pub mod entity_manager;
 
 /// Uniquely identifies the type of an Entity.
-pub type EntityType = smol_str::SmolStr;
+pub type EntityType = SmolStr;
 
 /// Uniquely identifies an entity, or entity instance.
-pub type EntityId = smol_str::SmolStr;
+pub type EntityId = SmolStr;
+
+/// Tags annotate an entity's events
+pub type Tag = SmolStr;
 
 /// Implemented by structures that can return an entity id.
 pub trait WithEntityId {
     fn entity_id(&self) -> EntityId;
+}
+
+/// Implemented by structures that can return a persistence id.
+pub trait WithPersistenceId {
+    fn persistence_id(&self) -> PersistenceId;
+}
+
+/// Implemented by structures that can return tags.
+pub trait WithTags {
+    fn tags(&self) -> Vec<Tag>;
 }
 
 /// A slice is deterministically defined based on the persistence id.

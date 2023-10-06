@@ -297,7 +297,7 @@ mod tests {
 
     use super::*;
     use akka_persistence_rs::{EntityId, EntityType, PersistenceId};
-    use akka_projection_rs::consumer_filter::{self, EntityIdOffset};
+    use akka_projection_rs::consumer_filter::{self, PersistenceIdIdOffset};
     use async_stream::stream;
     use chrono::{DateTime, Utc};
     use prost_types::Any;
@@ -491,9 +491,9 @@ mod tests {
         });
 
         let (consumer_filters, consumer_filters_receiver) =
-            watch::channel(vec![FilterCriteria::IncludeEntityIds {
-                entity_id_offsets: vec![EntityIdOffset {
-                    entity_id: entity_id.clone(),
+            watch::channel(vec![FilterCriteria::IncludePersistenceIds {
+                persistence_id_offsets: vec![PersistenceIdIdOffset {
+                    persistence_id: persistence_id.clone(),
                     seq_nr: 0,
                 }],
             }]);

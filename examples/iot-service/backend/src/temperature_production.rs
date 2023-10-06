@@ -2,7 +2,7 @@
 
 use crate::proto;
 use crate::temperature::{self, EventEnvelopeMarshaler};
-use akka_persistence_rs::EntityType;
+use akka_persistence_rs::{EntityType, Tag};
 use akka_persistence_rs_commitlog::EventEnvelope as CommitLogEventEnvelope;
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
 use akka_projection_rs_grpc::producer::GrpcEventFlow;
@@ -25,13 +25,15 @@ pub async fn task(
     kill_switch: oneshot::Receiver<()>,
     state_storage_path: PathBuf,
 ) {
+    let entity_type = EntityType::from(temperature::ENTITY_TYPE);
+
     // Establish a sink of envelopes that will be forwarded
     // on to a consumer via gRPC event producer.
 
     let (consumer_filters, consumer_filters_receiver) = watch::channel(vec![]);
     let (grpc_producer, grpc_producer_receiver) = mpsc::channel(10);
 
-    let grpc_flow = GrpcEventFlow::new(EntityType::from(temperature::ENTITY_TYPE), grpc_producer);
+    let grpc_flow = GrpcEventFlow::new(entity_type.clone(), grpc_producer);
 
     let (_task_kill_switch, task_kill_switch_receiver) = oneshot::channel();
     tokio::spawn(async {
@@ -41,6 +43,7 @@ pub async fn task(
             OriginId::from("edge-iot-service"),
             StreamId::from("temperature-events"),
             consumer_filters,
+            entity_type,
             grpc_producer_receiver,
             task_kill_switch_receiver,
         )
@@ -90,7 +93,7 @@ pub async fn task(
         &state_storage_path,
         kill_switch,
         source_provider,
-        grpc_flow.handler(consumer_filters_receiver, transformer),
+        grpc_flow.handler(consumer_filters_receiver, Tag::from("t:"), transformer),
         Duration::from_millis(100),
     )
     .await

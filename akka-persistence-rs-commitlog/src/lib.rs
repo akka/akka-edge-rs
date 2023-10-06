@@ -2,7 +2,8 @@
 
 use akka_persistence_rs::{
     entity_manager::{EventEnvelope as EntityManagerEventEnvelope, Handler, SourceProvider},
-    EntityId, Offset, TimestampOffset, WithEntityId, WithOffset, WithSeqNr, WithTimestampOffset,
+    EntityId, Offset, TimestampOffset, WithEntityId, WithOffset, WithSeqNr, WithTags,
+    WithTimestampOffset,
 };
 use async_stream::stream;
 use async_trait::async_trait;
@@ -64,6 +65,13 @@ impl<E> WithOffset for EventEnvelope<E> {
 impl<E> WithSeqNr for EventEnvelope<E> {
     fn seq_nr(&self) -> u64 {
         self.seq_nr
+    }
+}
+
+impl<E> WithTags for EventEnvelope<E> {
+    fn tags(&self) -> Vec<akka_persistence_rs::Tag> {
+        // TODO We need to support tags
+        vec![]
     }
 }
 

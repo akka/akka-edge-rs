@@ -1,11 +1,13 @@
 use akka_persistence_rs::EntityId;
 use akka_persistence_rs::EntityType;
 use akka_persistence_rs::PersistenceId;
+use akka_persistence_rs::Tag;
 use akka_persistence_rs::TimestampOffset;
-use akka_persistence_rs::WithEntityId;
+use akka_persistence_rs::WithPersistenceId;
 use akka_persistence_rs::WithSeqNr;
+use akka_persistence_rs::WithTags;
 use akka_persistence_rs::WithTimestampOffset;
-use akka_projection_rs::consumer_filter;
+use akka_projection_rs::consumer_filter::Filter;
 use akka_projection_rs::consumer_filter::FilterCriteria;
 use akka_projection_rs::HandlerError;
 use akka_projection_rs::PendingHandler;
@@ -30,6 +32,7 @@ use tonic::Request;
 
 use crate::delayer::Delayer;
 use crate::proto;
+use crate::to_filter_criteria;
 use crate::EventEnvelope;
 use crate::StreamId;
 
@@ -50,6 +53,8 @@ where
 {
     flow: GrpcEventFlow<E>,
     consumer_filters_receiver: watch::Receiver<Vec<FilterCriteria>>,
+    filter: Filter,
+    topic_tag_prefix: Tag,
     transformer: F,
     phantom: PhantomData<EI>,
 }
@@ -57,7 +62,7 @@ where
 #[async_trait]
 impl<EI, E, F> PendingHandler for GrpcEventProcessor<E, EI, F>
 where
-    EI: WithEntityId + WithSeqNr + WithTimestampOffset + Send,
+    EI: WithPersistenceId + WithSeqNr + WithTags + WithTimestampOffset + Send,
     E: Send,
     F: Fn(&EI) -> Option<E> + Send,
 {
@@ -69,8 +74,15 @@ where
         &mut self,
         envelope: Self::Envelope,
     ) -> Result<Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>>, HandlerError> {
-        let event = if consumer_filter::matches(&envelope, &self.consumer_filters_receiver.borrow())
-        {
+        if self.consumer_filters_receiver.has_changed().unwrap_or(true) {
+            self.filter = (
+                self.topic_tag_prefix.clone(),
+                self.consumer_filters_receiver.borrow().clone(),
+            )
+                .into();
+        };
+
+        let event = if self.filter.matches(&envelope) {
             (self.transformer)(&envelope)
         } else {
             // Gaps are ok given a filter situation.
@@ -78,7 +90,7 @@ where
         };
 
         let transformation = Transformation {
-            entity_id: envelope.entity_id(),
+            entity_id: envelope.persistence_id().entity_id,
             seq_nr: envelope.seq_nr(),
             offset: envelope.timestamp_offset(),
             event,
@@ -111,9 +123,13 @@ impl<E> GrpcEventFlow<E> {
         }
     }
 
+    /// Produces a handler for this flow. The handler will receive events,
+    /// apply filters and, if the filters match, transform and forward events
+    /// on to a gRPC producer.
     pub fn handler<EI, F>(
         self,
         consumer_filters_receiver: watch::Receiver<Vec<FilterCriteria>>,
+        topic_tag_prefix: Tag,
         transformer: F,
     ) -> GrpcEventProcessor<E, EI, F>
     where
@@ -122,6 +138,8 @@ impl<E> GrpcEventFlow<E> {
         GrpcEventProcessor {
             flow: self,
             consumer_filters_receiver,
+            filter: Filter::default(),
+            topic_tag_prefix,
             transformer,
             phantom: PhantomData,
         }
@@ -160,6 +178,7 @@ pub async fn run<E, EC, ECR>(
     origin_id: StreamId,
     stream_id: StreamId,
     consumer_filters: watch::Sender<Vec<FilterCriteria>>,
+    entity_type: EntityType,
     mut envelopes: mpsc::Receiver<(EventEnvelope<E>, oneshot::Sender<()>)>,
     mut kill_switch: oneshot::Receiver<()>,
 ) where
@@ -261,7 +280,7 @@ pub async fn run<E, EC, ECR>(
                         })) = stream_outs.next() => match message {
                             proto::consume_event_out::Message::Start(proto::ConsumerEventStart { filter }) => {
                                 debug!("Starting the protocol");
-                                consumer_filters.send(filter.into_iter().flat_map(|f| f.try_into()).collect()).unwrap();
+                                consumer_filters.send(filter.into_iter().flat_map(|f| to_filter_criteria(entity_type.clone(), f)).collect()).unwrap();
                                 break;
                             }
                             _ => {
@@ -437,6 +456,7 @@ mod tests {
                 OriginId::from("some-origin-id"),
                 StreamId::from("some-stream-id"),
                 consumer_filters,
+                EntityType::from("some-entity-type"),
                 receiver,
                 task_kill_switch_receiver,
             )
