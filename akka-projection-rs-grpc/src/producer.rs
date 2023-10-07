@@ -54,7 +54,6 @@ where
     flow: GrpcEventFlow<E>,
     consumer_filters_receiver: watch::Receiver<Vec<FilterCriteria>>,
     filter: Filter,
-    topic_tag_prefix: Tag,
     transformer: F,
     phantom: PhantomData<EI>,
 }
@@ -75,11 +74,8 @@ where
         envelope: Self::Envelope,
     ) -> Result<Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>>, HandlerError> {
         if self.consumer_filters_receiver.has_changed().unwrap_or(true) {
-            self.filter = (
-                self.topic_tag_prefix.clone(),
-                self.consumer_filters_receiver.borrow().clone(),
-            )
-                .into();
+            self.filter
+                .update(self.consumer_filters_receiver.borrow().clone());
         };
 
         let event = if self.filter.matches(&envelope) {
@@ -138,8 +134,7 @@ impl<E> GrpcEventFlow<E> {
         GrpcEventProcessor {
             flow: self,
             consumer_filters_receiver,
-            filter: Filter::default(),
-            topic_tag_prefix,
+            filter: Filter::new(topic_tag_prefix),
             transformer,
             phantom: PhantomData,
         }

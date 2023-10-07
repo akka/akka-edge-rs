@@ -95,53 +95,52 @@ pub fn exclude_all() -> FilterCriteria {
 }
 
 /// A collection of criteria
-#[derive(Default)]
 pub struct Filter {
     topic_tag_prefix: Tag,
 
     exclude_tags: Vec<Tag>,
-    remove_exclude_tags: Vec<Tag>,
     include_tags: Vec<Tag>,
-    remove_include_tags: Vec<Tag>,
     exclude_regex_entity_ids: Vec<Regex>,
-    remove_exclude_regex_entity_ids: Vec<Regex>,
     include_regex_entity_ids: Vec<Regex>,
-    remove_include_regex_entity_ids: Vec<Regex>,
     exclude_persistence_ids: Vec<PersistenceId>,
-    remove_exclude_persistence_ids: Vec<PersistenceId>,
-    include_persistence_ids: Vec<PersistenceIdIdOffset>,
-    remove_include_persistence_ids: Vec<PersistenceId>,
+    include_persistence_ids: Vec<PersistenceId>,
     include_topics: Vec<TopicFilter>,
-    remove_include_topics: Vec<TopicFilter>,
 }
 
 impl Filter {
+    pub fn new(topic_tag_prefix: Tag) -> Self {
+        Self {
+            topic_tag_prefix,
+            exclude_tags: vec![],
+            include_tags: vec![],
+            exclude_regex_entity_ids: vec![],
+            include_regex_entity_ids: vec![],
+            exclude_persistence_ids: vec![],
+            include_persistence_ids: vec![],
+            include_topics: vec![],
+        }
+    }
+
     /// A function that matches an envelope with criteria and passes it through if matched.
     pub fn matches<E>(&self, envelope: &E) -> bool
     where
         E: WithPersistenceId + WithTags,
     {
+        let tags = envelope.tags();
         let persistence_id = envelope.persistence_id();
         let entity_id = persistence_id.entity_id.clone();
-        let tags = envelope.tags();
 
-        if self.matches_exclude_tags(&tags) || self.matches_exclude_persistence_ids(&persistence_id)
+        if self.matches_exclude_tags(&tags)
+            || self.matches_exclude_persistence_ids(&persistence_id)
+            || self.matches_exclude_regex_entity_ids(&entity_id)
         {
-            true
+            self.matches_include_tags(&tags)
+                || self.matches_include_topics(&tags)
+                || self.matches_include_persistence_ids(&persistence_id)
+                || self.matches_include_regex_entity_ids(&entity_id)
         } else {
             true
         }
-
-        //   if (env.tags.intersect(excludeTags).nonEmpty ||
-        //       excludePersistenceIds.contains(pid) ||
-        //       matchesExcludeRegexEntityIds) {
-        //     env.tags.intersect(includeTags).nonEmpty ||
-        //     matchesTopics ||
-        //     includePersistenceIds.contains(pid) ||
-        //     matchesIncludeRegexEntityIds
-        //   } else {
-        //     true
-        //   }
     }
 
     fn matches_exclude_regex_entity_ids(&self, entity_id: &EntityId) -> bool {
@@ -156,9 +155,9 @@ impl Filter {
         Self::matches_persistence_ids(&self.exclude_persistence_ids, persistence_id)
     }
 
-    // fn matches_include_persistence_ids(&self, persistence_id: &PersistenceId) -> bool {
-    //     Self::matches_persistence_ids(&self.include_persistence_ids, persistence_id)
-    // }
+    fn matches_include_persistence_ids(&self, persistence_id: &PersistenceId) -> bool {
+        Self::matches_persistence_ids(&self.include_persistence_ids, persistence_id)
+    }
 
     fn matches_exclude_tags(&self, tags: &[Tag]) -> bool {
         Self::matches_tags(&self.exclude_tags, tags)
@@ -168,8 +167,12 @@ impl Filter {
         Self::matches_tags(&self.include_tags, tags)
     }
 
+    fn matches_include_topics(&self, tags: &[Tag]) -> bool {
+        Self::matches_topics(&self.include_topics, &self.topic_tag_prefix, tags)
+    }
+
     fn matches_regex_entity_ids(matching: &[Regex], entity_id: &EntityId) -> bool {
-        matching.iter().any(|r| r.is_match(&entity_id))
+        matching.iter().any(|r| r.is_match(entity_id))
     }
 
     fn matches_persistence_ids(
@@ -182,11 +185,7 @@ impl Filter {
     fn matches_tags(match_tags: &[Tag], tags: &[Tag]) -> bool {
         match_tags.iter().any(|mt| tags.iter().any(|t| t == mt))
     }
-    fn matches_topics(
-        expressions: &[TopicFilter],
-        topic_tag_prefix: &Tag,
-        tags: &Vec<Tag>,
-    ) -> bool {
+    fn matches_topics(expressions: &[TopicFilter], topic_tag_prefix: &Tag, tags: &[Tag]) -> bool {
         let topic_tag_prefix_len = topic_tag_prefix.len();
         expressions.iter().any(|r| {
             let matcher = r.get_matcher();
@@ -202,31 +201,27 @@ impl Filter {
                 })
         })
     }
-}
 
-impl From<(Tag, Vec<FilterCriteria>)> for Filter {
-    fn from(value: (Tag, Vec<FilterCriteria>)) -> Self {
-        let (topic_tag_prefix, value) = value;
-
-        value.into_iter().fold(Filter {topic_tag_prefix, ..Filter::default()}, |mut f, fc| {
+    /// Updates the filter given commands to add or remove new criteria.
+    pub fn update(&mut self, criteria: Vec<FilterCriteria>) {
+        for criterion in criteria {
             #[rustfmt::skip]
-            match fc {
-                FilterCriteria::ExcludeTags { mut tags } => f.exclude_tags.append(&mut tags),
-                FilterCriteria::RemoveExcludeTags { mut tags } => f.remove_exclude_tags.append(&mut tags),
-                FilterCriteria::IncludeTags { mut tags } => f.include_tags.append(&mut tags),
-                FilterCriteria::RemoveIncludeTags { mut tags } => f.remove_include_tags.append(&mut tags),
-                FilterCriteria::ExcludeRegexEntityIds { mut matching } => f.exclude_regex_entity_ids.append(&mut matching),
-                FilterCriteria::RemoveExcludeRegexEntityIds { mut matching } => f.remove_exclude_regex_entity_ids.append(&mut matching),
-                FilterCriteria::IncludeRegexEntityIds { mut matching } => f.include_regex_entity_ids.append(&mut matching),
-                FilterCriteria::RemoveIncludeRegexEntityIds { mut matching } => f.remove_include_regex_entity_ids.append(&mut matching),
-                FilterCriteria::ExcludePersistenceIds { mut persistence_ids } => f.exclude_persistence_ids.append(&mut persistence_ids),
-                FilterCriteria::RemoveExcludePersistenceIds { mut persistence_ids } => f.remove_exclude_persistence_ids.append(&mut persistence_ids),
-                FilterCriteria::IncludePersistenceIds { mut persistence_id_offsets } => f.include_persistence_ids.append(&mut persistence_id_offsets),
-                FilterCriteria::RemoveIncludePersistenceIds { mut persistence_ids } => f.remove_include_persistence_ids.append(&mut persistence_ids),
-                FilterCriteria::IncludeTopics { mut expressions } => f.include_topics.append(&mut expressions),
-                FilterCriteria::RemoveIncludeTopics { mut expressions } => f.remove_include_topics.append(&mut expressions),
+            match criterion {
+                FilterCriteria::ExcludeTags { mut tags } => self.exclude_tags.append(&mut tags),
+                FilterCriteria::RemoveExcludeTags { tags } => self.exclude_tags.retain(|existing| !tags.contains(existing)),
+                FilterCriteria::IncludeTags { mut tags } => self.include_tags.append(&mut tags),
+                FilterCriteria::RemoveIncludeTags { tags } => self.include_tags.retain(|existing| !tags.contains(existing)),
+                FilterCriteria::ExcludeRegexEntityIds { mut matching } => self.exclude_regex_entity_ids.append(&mut matching),
+                FilterCriteria::RemoveExcludeRegexEntityIds { matching } => self.exclude_regex_entity_ids.retain(|existing| !matching.iter().map(|m| m.as_str()).collect::<Vec<&str>>().contains(&existing.as_str())),
+                FilterCriteria::IncludeRegexEntityIds { mut matching } => self.include_regex_entity_ids.append(&mut matching),
+                FilterCriteria::RemoveIncludeRegexEntityIds { matching } => self.include_regex_entity_ids.retain(|existing| !matching.iter().map(|m| m.as_str()).collect::<Vec<&str>>().contains(&existing.as_str())),
+                FilterCriteria::ExcludePersistenceIds { mut persistence_ids } => self.exclude_persistence_ids.append(&mut persistence_ids),
+                FilterCriteria::RemoveExcludePersistenceIds { persistence_ids } => self.exclude_persistence_ids.retain(|existing| !persistence_ids.contains(existing)),
+                FilterCriteria::IncludePersistenceIds { persistence_id_offsets } => self.include_persistence_ids.append(&mut persistence_id_offsets.into_iter().map(|PersistenceIdIdOffset { persistence_id, .. } | persistence_id).collect()),
+                FilterCriteria::RemoveIncludePersistenceIds { persistence_ids } => self.include_persistence_ids.retain(|existing| !persistence_ids.contains(existing)),
+                FilterCriteria::IncludeTopics { mut expressions } => self.include_topics.append(&mut expressions),
+                FilterCriteria::RemoveIncludeTopics { expressions } => self.include_topics.retain(|existing| !expressions.contains(existing)),
             };
-            f
-        })
+        }
     }
 }
