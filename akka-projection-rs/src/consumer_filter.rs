@@ -185,6 +185,7 @@ impl Filter {
     fn matches_tags(match_tags: &[Tag], tags: &[Tag]) -> bool {
         match_tags.iter().any(|mt| tags.iter().any(|t| t == mt))
     }
+
     fn matches_topics(expressions: &[TopicFilter], topic_tag_prefix: &Tag, tags: &[Tag]) -> bool {
         let topic_tag_prefix_len = topic_tag_prefix.len();
         expressions.iter().any(|r| {
