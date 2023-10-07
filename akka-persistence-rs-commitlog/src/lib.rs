@@ -49,7 +49,9 @@ impl<E> WithSeqNr for EventEnvelope<E> {
 
 impl<E> WithTags for EventEnvelope<E> {
     fn tags(&self) -> Vec<akka_persistence_rs::Tag> {
-        // TODO We need to support tags
+        // Tags are not presently considered useful at the edge. A remote consumer would be interested
+        // in all events from the edge in most cases, and the edge itself decides what to publish
+        // (producer defined filter).
         vec![]
     }
 }
