@@ -395,7 +395,9 @@ mod tests {
                         yield Ok(proto::ConsumeEventOut {
                             message: Some(proto::consume_event_out::Message::Start(
                                 proto::ConsumerEventStart {
-                                    filter: vec![]
+                                    filter: vec![proto::FilterCriteria {
+                                        message: Some(proto::filter_criteria::Message::ExcludeEntityIds(proto::ExcludeEntityIds { entity_ids: vec![] })),
+                                    }]
                                 },
                             )),
                         });
@@ -451,7 +453,7 @@ mod tests {
                 .unwrap();
         });
 
-        let (consumer_filters, _consumer_filters_receiver) = watch::channel(vec![]);
+        let (consumer_filters, mut consumer_filters_receiver) = watch::channel(vec![]);
         let (sender, receiver) = mpsc::channel(10);
         let (_task_kill_switch, task_kill_switch_receiver) = oneshot::channel();
         tokio::spawn(async move {
@@ -487,6 +489,9 @@ mod tests {
             ))
             .await
             .is_ok());
+
+        assert!(consumer_filters_receiver.changed().await.is_ok());
+        assert!(!consumer_filters_receiver.borrow().is_empty());
 
         assert!(reply_receiver.await.is_ok());
 

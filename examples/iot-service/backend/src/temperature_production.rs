@@ -37,6 +37,7 @@ pub async fn task(
 
     let (_task_kill_switch, task_kill_switch_receiver) = oneshot::channel();
     let task_entity_type = entity_type.clone();
+
     tokio::spawn(async {
         let channel = Channel::builder(event_consumer_addr);
         akka_projection_rs_grpc::producer::run(
