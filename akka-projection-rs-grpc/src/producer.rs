@@ -47,23 +47,22 @@ pub struct Transformation<E> {
 
 /// Processes events transformed from some unknown event envelope (EI)
 /// to then pass on to a gRPC event producer.
-pub struct GrpcEventProcessor<E, EI, F>
-where
-    F: Fn(&EI) -> Option<E>,
-{
+pub struct GrpcEventProcessor<E, EI, PF, T> {
     flow: GrpcEventFlow<E>,
+    producer_filter: PF,
     consumer_filters_receiver: watch::Receiver<Vec<FilterCriteria>>,
     filter: Filter,
-    transformer: F,
+    transformer: T,
     phantom: PhantomData<EI>,
 }
 
 #[async_trait]
-impl<EI, E, F> PendingHandler for GrpcEventProcessor<E, EI, F>
+impl<EI, E, PF, T> PendingHandler for GrpcEventProcessor<E, EI, PF, T>
 where
     EI: WithPersistenceId + WithSeqNr + WithTags + WithTimestampOffset + Send,
     E: Send,
-    F: Fn(&EI) -> Option<E> + Send,
+    PF: Fn(&EI) -> bool + Send,
+    T: Fn(&EI) -> Option<E> + Send,
 {
     type Envelope = EI;
 
@@ -78,7 +77,7 @@ where
                 .update(self.consumer_filters_receiver.borrow().clone());
         };
 
-        let event = if self.filter.matches(&envelope) {
+        let event = if (self.producer_filter)(&envelope) && self.filter.matches(&envelope) {
             (self.transformer)(&envelope)
         } else {
             // Gaps are ok given a filter situation.
@@ -122,17 +121,20 @@ impl<E> GrpcEventFlow<E> {
     /// Produces a handler for this flow. The handler will receive events,
     /// apply filters and, if the filters match, transform and forward events
     /// on to a gRPC producer.
-    pub fn handler<EI, F>(
+    pub fn handler<EI, PF, T>(
         self,
+        producer_filter: PF,
         consumer_filters_receiver: watch::Receiver<Vec<FilterCriteria>>,
         topic_tag_prefix: Tag,
-        transformer: F,
-    ) -> GrpcEventProcessor<E, EI, F>
+        transformer: T,
+    ) -> GrpcEventProcessor<E, EI, PF, T>
     where
-        F: Fn(&EI) -> Option<E>,
+        PF: Fn(&EI) -> bool,
+        T: Fn(&EI) -> Option<E>,
     {
         GrpcEventProcessor {
             flow: self,
+            producer_filter,
             consumer_filters_receiver,
             filter: Filter::new(topic_tag_prefix),
             transformer,

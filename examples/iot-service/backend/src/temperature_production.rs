@@ -40,8 +40,10 @@ pub async fn task(
 
     tokio::spawn(async {
         let channel = Channel::builder(event_consumer_addr);
+        let consumer_channel = || channel.connect();
+
         akka_projection_rs_grpc::producer::run(
-            || channel.connect(),
+            consumer_channel,
             OriginId::from("edge-iot-service"),
             StreamId::from("temperature-events"),
             consumer_filters,
@@ -89,13 +91,21 @@ pub async fn task(
     // gRPC events to a remote consumer. The handler is a "flowing" one
     // where an upper limit of the number of envelopes in-flight is set.
 
+    let producer_filter = |_: &CommitLogEventEnvelope<temperature::Event>| true;
+    let topic_tag_prefix = Tag::from("t:");
+    let event_handler = grpc_flow.handler(
+        producer_filter,
+        consumer_filters_receiver,
+        topic_tag_prefix,
+        transformer,
+    );
     akka_projection_rs_storage::run(
         &secret_store,
         &offsets_key_secret_path,
         &state_storage_path,
         kill_switch,
         source_provider,
-        grpc_flow.handler(consumer_filters_receiver, Tag::from("t:"), transformer),
+        event_handler,
         Duration::from_millis(100),
     )
     .await
