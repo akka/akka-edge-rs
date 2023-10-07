@@ -280,7 +280,12 @@ pub async fn run<E, EC, ECR>(
                         })) = stream_outs.next() => match message {
                             proto::consume_event_out::Message::Start(proto::ConsumerEventStart { filter }) => {
                                 debug!("Starting the protocol");
-                                consumer_filters.send(filter.into_iter().flat_map(|f| to_filter_criteria(entity_type.clone(), f)).collect()).unwrap();
+                                let _ = consumer_filters.send(
+                                    filter
+                                        .into_iter()
+                                        .flat_map(|f| to_filter_criteria(entity_type.clone(), f))
+                                        .collect(),
+                                );
                                 break;
                             }
                             _ => {
@@ -446,7 +451,7 @@ mod tests {
                 .unwrap();
         });
 
-        let (consumer_filters, _) = watch::channel(vec![]);
+        let (consumer_filters, _consumer_filters_receiver) = watch::channel(vec![]);
         let (sender, receiver) = mpsc::channel(10);
         let (_task_kill_switch, task_kill_switch_receiver) = oneshot::channel();
         tokio::spawn(async move {

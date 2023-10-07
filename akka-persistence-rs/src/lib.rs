@@ -24,11 +24,6 @@ pub type EntityId = SmolStr;
 /// Tags annotate an entity's events
 pub type Tag = SmolStr;
 
-/// Implemented by structures that can return an entity id.
-pub trait WithEntityId {
-    fn entity_id(&self) -> EntityId;
-}
-
 /// Implemented by structures that can return a persistence id.
 pub trait WithPersistenceId {
     fn persistence_id(&self) -> PersistenceId;

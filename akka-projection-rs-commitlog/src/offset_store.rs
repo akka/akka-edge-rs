@@ -2,7 +2,7 @@
 
 use std::num::NonZeroUsize;
 
-use akka_persistence_rs::{entity_manager, EntityId, Message};
+use akka_persistence_rs::{entity_manager, EntityId, EntityType, Message, PersistenceId};
 use akka_persistence_rs_commitlog::{CommitLogMarshaler, CommitLogTopicAdapter, EventEnvelope};
 use akka_projection_rs::offset_store;
 use async_trait::async_trait;
@@ -13,6 +13,7 @@ use streambed_logged::{compaction::KeyBasedRetention, FileLog};
 use tokio::sync::mpsc;
 
 struct OffsetStoreEventMarshaler<F> {
+    entity_type: EntityType,
     to_compaction_key: F,
 }
 
@@ -21,6 +22,10 @@ impl<F> CommitLogMarshaler<offset_store::Event> for OffsetStoreEventMarshaler<F>
 where
     F: Fn(&EntityId, &offset_store::Event) -> Option<Key> + Send + Sync,
 {
+    fn entity_type(&self) -> EntityType {
+        self.entity_type.clone()
+    }
+
     fn to_compaction_key(&self, entity_id: &EntityId, event: &offset_store::Event) -> Option<Key> {
         (self.to_compaction_key)(entity_id, event)
     }
@@ -41,7 +46,7 @@ where
         let value = u64::from_be_bytes(record.value.try_into().ok()?);
         let event = offset_store::Event::Saved { seq_nr: value };
         record.timestamp.map(|timestamp| EventEnvelope {
-            entity_id,
+            persistence_id: PersistenceId::new(self.entity_type(), entity_id),
             seq_nr: 0, // We don't care about sequence numbers with the offset store as they won't be projected anywhere
             timestamp,
             event,
@@ -85,6 +90,7 @@ pub async fn run(
     offset_store_receiver: mpsc::Receiver<Message<offset_store::Command>>,
     to_compaction_key: impl Fn(&EntityId, &offset_store::Event) -> Option<Key> + Send + Sync + 'static,
 ) {
+    let events_entity_type = EntityType::from(offset_store_id.clone());
     let events_topic = Topic::from(offset_store_id.clone());
 
     commit_log
@@ -94,7 +100,10 @@ pub async fn run(
 
     let file_log_topic_adapter = CommitLogTopicAdapter::new(
         commit_log,
-        OffsetStoreEventMarshaler { to_compaction_key },
+        OffsetStoreEventMarshaler {
+            entity_type: events_entity_type,
+            to_compaction_key,
+        },
         &offset_store_id,
         events_topic,
     );

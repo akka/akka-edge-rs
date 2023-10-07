@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 use akka_persistence_rs::{
-    EntityId, EntityType, Offset, PersistenceId, Tag, TimestampOffset, WithEntityId, WithOffset,
+    EntityId, EntityType, Offset, PersistenceId, Tag, TimestampOffset, WithOffset,
 };
 use akka_projection_rs::consumer_filter::{FilterCriteria, PersistenceIdIdOffset};
 use mqtt::TopicFilter;
@@ -19,12 +19,6 @@ pub struct EventEnvelope<E> {
     pub seq_nr: u64,
     pub event: Option<E>,
     pub offset: TimestampOffset,
-}
-
-impl<E> WithEntityId for EventEnvelope<E> {
-    fn entity_id(&self) -> EntityId {
-        self.persistence_id.entity_id.clone()
-    }
 }
 
 impl<E> WithOffset for EventEnvelope<E> {

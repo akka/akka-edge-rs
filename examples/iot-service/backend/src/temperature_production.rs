@@ -36,6 +36,7 @@ pub async fn task(
     let grpc_flow = GrpcEventFlow::new(entity_type.clone(), grpc_producer);
 
     let (_task_kill_switch, task_kill_switch_receiver) = oneshot::channel();
+    let task_entity_type = entity_type.clone();
     tokio::spawn(async {
         let channel = Channel::builder(event_consumer_addr);
         akka_projection_rs_grpc::producer::run(
@@ -43,7 +44,7 @@ pub async fn task(
             OriginId::from("edge-iot-service"),
             StreamId::from("temperature-events"),
             consumer_filters,
-            entity_type,
+            task_entity_type,
             grpc_producer_receiver,
             task_kill_switch_receiver,
         )
@@ -55,12 +56,12 @@ pub async fn task(
     let source_provider = CommitLogSourceProvider::new(
         commit_log,
         EventEnvelopeMarshaler {
+            entity_type,
             events_key_secret_path: Arc::from(events_key_secret_path),
             secret_store: secret_store.clone(),
         },
         "iot-service-projection",
         Topic::from(temperature::EVENTS_TOPIC),
-        EntityType::from(temperature::ENTITY_TYPE),
     );
 
     // Optionally transform events from the commit log to an event the

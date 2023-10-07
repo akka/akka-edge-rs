@@ -25,9 +25,7 @@
 //! * IncludeRegexEntityIds - include events for entities with entity ids matching the given regular expressions
 //! * IncludeEntityIds - include events for entities with the given entity ids
 
-use akka_persistence_rs::{
-    EntityId, PersistenceId, Tag, WithEntityId, WithPersistenceId, WithTags,
-};
+use akka_persistence_rs::{EntityId, PersistenceId, Tag, WithPersistenceId, WithTags};
 use mqtt::{TopicFilter, TopicNameRef};
 use regex::Regex;
 
