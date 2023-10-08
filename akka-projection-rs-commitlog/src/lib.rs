@@ -192,6 +192,7 @@ mod tests {
                 timestamp,
                 event,
                 offset: 0,
+                tags: vec![],
             })
         }
 

@@ -26,12 +26,12 @@ pub type Tag = SmolStr;
 
 /// Implemented by structures that can return a persistence id.
 pub trait WithPersistenceId {
-    fn persistence_id(&self) -> PersistenceId;
+    fn persistence_id(&self) -> &PersistenceId;
 }
 
 /// Implemented by structures that can return tags.
 pub trait WithTags {
-    fn tags(&self) -> Vec<Tag>;
+    fn tags(&self) -> &[Tag];
 }
 
 /// A slice is deterministically defined based on the persistence id.

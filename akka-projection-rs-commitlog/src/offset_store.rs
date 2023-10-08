@@ -51,6 +51,7 @@ where
             timestamp,
             event,
             offset: record.offset,
+            tags: vec![],
         })
     }
 

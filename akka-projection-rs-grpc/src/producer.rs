@@ -85,7 +85,7 @@ where
         };
 
         let transformation = Transformation {
-            entity_id: envelope.persistence_id().entity_id,
+            entity_id: envelope.persistence_id().entity_id.clone(),
             seq_nr: envelope.seq_nr(),
             offset: envelope.timestamp_offset(),
             event,

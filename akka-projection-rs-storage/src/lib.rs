@@ -275,6 +275,7 @@ mod tests {
                                 value: self.event_value.clone(),
                             },
                             offset: 0,
+                            tags: vec![]
                         }
                     }
                 }

@@ -150,16 +150,16 @@ impl Filter {
     {
         let tags = envelope.tags();
         let persistence_id = envelope.persistence_id();
-        let entity_id = persistence_id.entity_id.clone();
+        let entity_id = &persistence_id.entity_id;
 
-        if self.matches_exclude_tags(&tags)
-            || self.matches_exclude_persistence_ids(&persistence_id)
-            || self.matches_exclude_regex_entity_ids(&entity_id)
+        if self.matches_exclude_tags(tags)
+            || self.matches_exclude_persistence_ids(persistence_id)
+            || self.matches_exclude_regex_entity_ids(entity_id)
         {
-            self.matches_include_tags(&tags)
-                || self.matches_include_topics(&tags)
-                || self.matches_include_persistence_ids(&persistence_id)
-                || self.matches_include_regex_entity_ids(&entity_id)
+            self.matches_include_tags(tags)
+                || self.matches_include_topics(tags)
+                || self.matches_include_persistence_ids(persistence_id)
+                || self.matches_include_regex_entity_ids(entity_id)
         } else {
             true
         }
@@ -318,14 +318,14 @@ mod tests {
     }
 
     impl WithPersistenceId for TestEnvelope {
-        fn persistence_id(&self) -> PersistenceId {
-            self.persistence_id.clone()
+        fn persistence_id(&self) -> &PersistenceId {
+            &self.persistence_id
         }
     }
 
     impl WithTags for TestEnvelope {
-        fn tags(&self) -> Vec<Tag> {
-            self.tags.clone()
+        fn tags(&self) -> &[Tag] {
+            &self.tags
         }
     }
 

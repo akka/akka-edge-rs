@@ -2,8 +2,8 @@
 
 use akka_persistence_rs::{
     entity_manager::{EventEnvelope as EntityManagerEventEnvelope, Handler, SourceProvider},
-    EntityId, EntityType, Offset, PersistenceId, TimestampOffset, WithOffset, WithPersistenceId,
-    WithSeqNr, WithTags, WithTimestampOffset,
+    EntityId, EntityType, Offset, PersistenceId, Tag, TimestampOffset, WithOffset,
+    WithPersistenceId, WithSeqNr, WithTags, WithTimestampOffset,
 };
 use async_stream::stream;
 use async_trait::async_trait;
@@ -20,6 +20,9 @@ use streambed::{
 use tokio_stream::{Stream, StreamExt};
 
 /// An envelope wraps a commit log event associated with a specific entity.
+/// Tags are not presently considered useful at the edge. A remote consumer would be interested
+/// in all events from the edge in most cases, and the edge itself decides what to publish
+/// (producer defined filter).
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventEnvelope<E> {
     pub persistence_id: PersistenceId,
@@ -27,11 +30,12 @@ pub struct EventEnvelope<E> {
     pub timestamp: DateTime<Utc>,
     pub event: E,
     pub offset: CommitLogOffset,
+    pub tags: Vec<Tag>,
 }
 
 impl<E> WithPersistenceId for EventEnvelope<E> {
-    fn persistence_id(&self) -> PersistenceId {
-        self.persistence_id.clone()
+    fn persistence_id(&self) -> &PersistenceId {
+        &self.persistence_id
     }
 }
 
@@ -48,11 +52,8 @@ impl<E> WithSeqNr for EventEnvelope<E> {
 }
 
 impl<E> WithTags for EventEnvelope<E> {
-    fn tags(&self) -> Vec<akka_persistence_rs::Tag> {
-        // Tags are not presently considered useful at the edge. A remote consumer would be interested
-        // in all events from the edge in most cases, and the edge itself decides what to publish
-        // (producer defined filter).
-        vec![]
+    fn tags(&self) -> &[akka_persistence_rs::Tag] {
+        &self.tags
     }
 }
 
@@ -157,6 +158,7 @@ where
                     timestamp,
                     event,
                     offset: record.offset,
+                    tags: vec![],
                 })
             })
         })
@@ -501,6 +503,7 @@ mod tests {
                 timestamp,
                 event,
                 offset: 0,
+                tags: vec![],
             })
         }
 
