@@ -3,7 +3,7 @@
 use akka_persistence_rs::{
     EntityId, EntityType, Offset, PersistenceId, Tag, TimestampOffset, WithOffset,
 };
-use akka_projection_rs::consumer_filter::{FilterCriteria, PersistenceIdIdOffset};
+use akka_projection_rs::consumer_filter::{ComparableRegex, FilterCriteria, PersistenceIdIdOffset};
 use mqtt::TopicFilter;
 use regex::Regex;
 use smol_str::SmolStr;
@@ -64,28 +64,28 @@ impl From<FilterCriteria> for proto::FilterCriteria {
             FilterCriteria::ExcludeRegexEntityIds { matching } => {
                 proto::filter_criteria::Message::ExcludeMatchingEntityIds(
                     proto::ExcludeRegexEntityIds {
-                        matching: matching.into_iter().map(|v| v.to_string()).collect(),
+                        matching: matching.into_iter().map(|v| v.0.to_string()).collect(),
                     },
                 )
             }
             FilterCriteria::RemoveExcludeRegexEntityIds { matching } => {
                 proto::filter_criteria::Message::RemoveExcludeMatchingEntityIds(
                     proto::RemoveExcludeRegexEntityIds {
-                        matching: matching.into_iter().map(|v| v.to_string()).collect(),
+                        matching: matching.into_iter().map(|v| v.0.to_string()).collect(),
                     },
                 )
             }
             FilterCriteria::IncludeRegexEntityIds { matching } => {
                 proto::filter_criteria::Message::IncludeMatchingEntityIds(
                     proto::IncludeRegexEntityIds {
-                        matching: matching.into_iter().map(|v| v.to_string()).collect(),
+                        matching: matching.into_iter().map(|v| v.0.to_string()).collect(),
                     },
                 )
             }
             FilterCriteria::RemoveIncludeRegexEntityIds { matching } => {
                 proto::filter_criteria::Message::RemoveIncludeMatchingEntityIds(
                     proto::RemoveIncludeRegexEntityIds {
-                        matching: matching.into_iter().map(|v| v.to_string()).collect(),
+                        matching: matching.into_iter().map(|v| v.0.to_string()).collect(),
                     },
                 )
             }
@@ -188,7 +188,7 @@ pub fn to_filter_criteria(
                 ) => FilterCriteria::ExcludeRegexEntityIds {
                     matching: matching
                         .into_iter()
-                        .flat_map(|m| Regex::new(&m).ok())
+                        .flat_map(|m| Regex::new(&m).ok().map(ComparableRegex))
                         .collect(),
                 },
                 proto::filter_criteria::Message::RemoveExcludeMatchingEntityIds(
@@ -196,7 +196,7 @@ pub fn to_filter_criteria(
                 ) => FilterCriteria::RemoveExcludeRegexEntityIds {
                     matching: matching
                         .into_iter()
-                        .flat_map(|m| Regex::new(&m).ok())
+                        .flat_map(|m| Regex::new(&m).ok().map(ComparableRegex))
                         .collect(),
                 },
                 proto::filter_criteria::Message::IncludeMatchingEntityIds(
@@ -204,7 +204,7 @@ pub fn to_filter_criteria(
                 ) => FilterCriteria::IncludeRegexEntityIds {
                     matching: matching
                         .into_iter()
-                        .flat_map(|m| Regex::new(&m).ok())
+                        .flat_map(|m| Regex::new(&m).ok().map(ComparableRegex))
                         .collect(),
                 },
                 proto::filter_criteria::Message::RemoveIncludeMatchingEntityIds(
@@ -212,7 +212,7 @@ pub fn to_filter_criteria(
                 ) => FilterCriteria::RemoveIncludeRegexEntityIds {
                     matching: matching
                         .into_iter()
-                        .flat_map(|m| Regex::new(&m).ok())
+                        .flat_map(|m| Regex::new(&m).ok().map(ComparableRegex))
                         .collect(),
                 },
                 proto::filter_criteria::Message::ExcludeEntityIds(proto::ExcludeEntityIds {

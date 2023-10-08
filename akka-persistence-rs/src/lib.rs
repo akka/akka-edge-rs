@@ -72,7 +72,7 @@ fn jdk_string_hashcode(s: &str) -> i32 {
 }
 
 /// A namespaced entity id given an entity type.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Deserialize, PartialOrd, Ord, Serialize, PartialEq, Eq, Hash)]
 pub struct PersistenceId {
     pub entity_type: EntityType,
     pub entity_id: EntityId,
