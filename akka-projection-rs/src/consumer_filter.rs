@@ -129,6 +129,11 @@ pub struct Filter {
     include_topics: Vec<TopicFilter>,
 }
 
+const MAX_TAGS: usize = 100;
+const MAX_REGEX_ENTITY_IDS: usize = 100;
+const MAX_PERSISTENCE_IDS: usize = 100;
+const MAX_TOPICS: usize = 100;
+
 impl Filter {
     pub fn new(topic_tag_prefix: Tag) -> Self {
         Self {
@@ -230,19 +235,22 @@ impl Filter {
         for criterion in criteria {
             match criterion {
                 FilterCriteria::ExcludeTags { mut tags } => {
-                    merge(&mut self.exclude_tags, &mut tags)
+                    merge::<_, MAX_TAGS>(&mut self.exclude_tags, &mut tags)
                 }
 
                 FilterCriteria::RemoveExcludeTags { tags } => remove(&mut self.exclude_tags, &tags),
 
                 FilterCriteria::IncludeTags { mut tags } => {
-                    merge(&mut self.include_tags, &mut tags)
+                    merge::<_, MAX_TAGS>(&mut self.include_tags, &mut tags)
                 }
 
                 FilterCriteria::RemoveIncludeTags { tags } => remove(&mut self.include_tags, &tags),
 
                 FilterCriteria::ExcludeRegexEntityIds { mut matching } => {
-                    merge(&mut self.exclude_regex_entity_ids, &mut matching)
+                    merge::<_, MAX_REGEX_ENTITY_IDS>(
+                        &mut self.exclude_regex_entity_ids,
+                        &mut matching,
+                    )
                 }
 
                 FilterCriteria::RemoveExcludeRegexEntityIds { matching } => {
@@ -250,7 +258,10 @@ impl Filter {
                 }
 
                 FilterCriteria::IncludeRegexEntityIds { mut matching } => {
-                    merge(&mut self.include_regex_entity_ids, &mut matching)
+                    merge::<_, MAX_REGEX_ENTITY_IDS>(
+                        &mut self.include_regex_entity_ids,
+                        &mut matching,
+                    )
                 }
 
                 FilterCriteria::RemoveIncludeRegexEntityIds { matching } => {
@@ -259,7 +270,10 @@ impl Filter {
 
                 FilterCriteria::ExcludePersistenceIds {
                     mut persistence_ids,
-                } => merge(&mut self.exclude_persistence_ids, &mut persistence_ids),
+                } => merge::<_, MAX_PERSISTENCE_IDS>(
+                    &mut self.exclude_persistence_ids,
+                    &mut persistence_ids,
+                ),
 
                 FilterCriteria::RemoveExcludePersistenceIds { persistence_ids } => {
                     remove(&mut self.exclude_persistence_ids, &persistence_ids)
@@ -267,7 +281,7 @@ impl Filter {
 
                 FilterCriteria::IncludePersistenceIds {
                     persistence_id_offsets,
-                } => merge(
+                } => merge::<_, MAX_PERSISTENCE_IDS>(
                     &mut self.include_persistence_ids,
                     &mut persistence_id_offsets
                         .into_iter()
@@ -280,7 +294,7 @@ impl Filter {
                 }
 
                 FilterCriteria::IncludeTopics { mut expressions } => {
-                    merge(&mut self.include_topics, &mut expressions)
+                    merge::<_, MAX_TOPICS>(&mut self.include_topics, &mut expressions)
                 }
 
                 FilterCriteria::RemoveIncludeTopics { expressions } => {
@@ -291,13 +305,15 @@ impl Filter {
     }
 }
 
-fn merge<T>(l: &mut Vec<T>, r: &mut Vec<T>)
+fn merge<T, const MAX_LEN: usize>(l: &mut Vec<T>, r: &mut Vec<T>)
 where
     T: Ord,
 {
-    l.append(r);
-    l.sort();
-    l.dedup();
+    if l.len() + r.len() < MAX_LEN * 2 {
+        l.append(r);
+        l.sort();
+        l.dedup();
+    }
 }
 
 fn remove<T>(l: &mut Vec<T>, r: &[T])
