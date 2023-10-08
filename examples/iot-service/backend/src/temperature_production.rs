@@ -39,11 +39,11 @@ pub async fn task(
     let task_entity_type = entity_type.clone();
 
     tokio::spawn(async {
-        let channel = Channel::builder(event_consumer_addr);
-        let consumer_channel = || channel.connect();
+        let consumer_endpoint = Channel::builder(event_consumer_addr);
+        let consumer_connector = || consumer_endpoint.connect();
 
         akka_projection_rs_grpc::producer::run(
-            consumer_channel,
+            consumer_connector,
             OriginId::from("edge-iot-service"),
             StreamId::from("temperature-events"),
             consumer_filters,
