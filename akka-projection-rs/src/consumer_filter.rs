@@ -306,3 +306,163 @@ where
 {
     l.retain(|existing| !r.contains(existing));
 }
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    struct TestEnvelope {
+        persistence_id: PersistenceId,
+        tags: Vec<Tag>,
+    }
+
+    impl WithPersistenceId for TestEnvelope {
+        fn persistence_id(&self) -> PersistenceId {
+            self.persistence_id.clone()
+        }
+    }
+
+    impl WithTags for TestEnvelope {
+        fn tags(&self) -> Vec<Tag> {
+            self.tags.clone()
+        }
+    }
+
+    #[test]
+    fn exclude_include_and_remove_include_tag_and_remove_exclude_tag() {
+        let persistence_id = "a|1".parse::<PersistenceId>().unwrap();
+        let tag = Tag::from("a");
+
+        let envelope = TestEnvelope {
+            persistence_id: persistence_id.clone(),
+            tags: vec![tag.clone()],
+        };
+
+        let mut filter = Filter::new(Tag::from(""));
+
+        let criteria = vec![
+            FilterCriteria::ExcludeTags {
+                tags: vec![tag.clone()],
+            },
+            FilterCriteria::IncludeTags {
+                tags: vec![tag.clone()],
+            },
+        ];
+        filter.update(criteria);
+        assert!(filter.matches(&envelope));
+
+        let criteria = vec![FilterCriteria::RemoveIncludeTags {
+            tags: vec![tag.clone()],
+        }];
+        filter.update(criteria);
+        assert!(!filter.matches(&envelope));
+
+        let criteria = vec![FilterCriteria::RemoveExcludeTags { tags: vec![tag] }];
+        filter.update(criteria);
+        assert!(filter.matches(&envelope));
+    }
+
+    #[test]
+    fn exclude_include_and_remove_include_persistence_id_and_remove_exclude_persistence_id() {
+        let persistence_id = "a|1".parse::<PersistenceId>().unwrap();
+
+        let envelope = TestEnvelope {
+            persistence_id: persistence_id.clone(),
+            tags: vec![],
+        };
+
+        let mut filter = Filter::new(Tag::from(""));
+
+        let criteria = vec![
+            FilterCriteria::ExcludePersistenceIds {
+                persistence_ids: vec![persistence_id.clone()],
+            },
+            FilterCriteria::IncludePersistenceIds {
+                persistence_id_offsets: vec![PersistenceIdIdOffset {
+                    persistence_id: persistence_id.clone(),
+                    seq_nr: 0,
+                }],
+            },
+        ];
+        filter.update(criteria);
+        assert!(filter.matches(&envelope));
+
+        let criteria = vec![FilterCriteria::RemoveIncludePersistenceIds {
+            persistence_ids: vec![persistence_id.clone()],
+        }];
+        filter.update(criteria);
+        assert!(!filter.matches(&envelope));
+
+        let criteria = vec![FilterCriteria::RemoveExcludePersistenceIds {
+            persistence_ids: vec![persistence_id.clone()],
+        }];
+        filter.update(criteria);
+        assert!(filter.matches(&envelope));
+    }
+
+    #[test]
+    fn exclude_include_and_remove_include_regex_entity_id_and_remove_exclude_regex_entity_id() {
+        let persistence_id = "a|1".parse::<PersistenceId>().unwrap();
+        let matching = ComparableRegex(Regex::new("1").unwrap());
+
+        let envelope = TestEnvelope {
+            persistence_id: persistence_id.clone(),
+            tags: vec![],
+        };
+
+        let mut filter = Filter::new(Tag::from(""));
+
+        let criteria = vec![
+            FilterCriteria::ExcludeRegexEntityIds {
+                matching: vec![matching.clone()],
+            },
+            FilterCriteria::IncludeRegexEntityIds {
+                matching: vec![matching.clone()],
+            },
+        ];
+        filter.update(criteria);
+        assert!(filter.matches(&envelope));
+
+        let criteria = vec![FilterCriteria::RemoveIncludeRegexEntityIds {
+            matching: vec![matching.clone()],
+        }];
+        filter.update(criteria);
+        assert!(!filter.matches(&envelope));
+
+        let criteria = vec![FilterCriteria::RemoveExcludeRegexEntityIds {
+            matching: vec![matching.clone()],
+        }];
+        filter.update(criteria);
+        assert!(filter.matches(&envelope));
+    }
+
+    #[test]
+    fn include_and_remove_include_topic() {
+        let persistence_id = "a|1".parse::<PersistenceId>().unwrap();
+        let tag = Tag::from("t:sport/abc/player1");
+        let expression = TopicFilter::new("sport/+/player1").unwrap();
+
+        let envelope = TestEnvelope {
+            persistence_id: persistence_id.clone(),
+            tags: vec![tag.clone()],
+        };
+
+        let mut filter = Filter::new(Tag::from("t:"));
+
+        let criteria = vec![
+            exclude_all(),
+            FilterCriteria::IncludeTopics {
+                expressions: vec![expression.clone()],
+            },
+        ];
+        filter.update(criteria);
+        assert!(filter.matches(&envelope));
+
+        let criteria = vec![FilterCriteria::RemoveIncludeTopics {
+            expressions: vec![expression.clone()],
+        }];
+        filter.update(criteria);
+        assert!(!filter.matches(&envelope));
+    }
+}
