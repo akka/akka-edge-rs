@@ -3,8 +3,9 @@
 use akka_persistence_rs::{
     EntityId, EntityType, Offset, PersistenceId, Tag, TimestampOffset, WithOffset,
 };
-use akka_projection_rs::consumer_filter::{ComparableRegex, FilterCriteria, PersistenceIdIdOffset};
-use mqtt::TopicFilter;
+use akka_projection_rs::consumer_filter::{
+    ComparableRegex, FilterCriteria, PersistenceIdIdOffset, TopicMatcher,
+};
 use regex::Regex;
 use smol_str::SmolStr;
 
@@ -260,7 +261,7 @@ pub fn to_filter_criteria(
                 }) => FilterCriteria::IncludeTopics {
                     expressions: expression
                         .into_iter()
-                        .flat_map(|e| TopicFilter::new(e).ok())
+                        .flat_map(|e| TopicMatcher::new(e).ok())
                         .collect(),
                 },
                 proto::filter_criteria::Message::RemoveIncludeTopics(
@@ -268,7 +269,7 @@ pub fn to_filter_criteria(
                 ) => FilterCriteria::RemoveIncludeTopics {
                     expressions: expression
                         .into_iter()
-                        .flat_map(|e| TopicFilter::new(e).ok())
+                        .flat_map(|e| TopicMatcher::new(e).ok())
                         .collect(),
                 },
             };

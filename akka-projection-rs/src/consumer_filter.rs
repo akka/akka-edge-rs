@@ -25,6 +25,8 @@
 //! * IncludeRegexEntityIds - include events for entities with entity ids matching the given regular expressions
 //! * IncludeEntityIds - include events for entities with the given entity ids
 
+use std::fmt::Display;
+
 use akka_persistence_rs::{EntityId, PersistenceId, Tag, WithPersistenceId, WithTags};
 use mqtt::{TopicFilter, TopicNameRef};
 use regex::Regex;
@@ -57,6 +59,26 @@ impl PartialOrd for ComparableRegex {
 impl Ord for ComparableRegex {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0.as_str().cmp(other.0.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Ord, Eq, PartialEq, PartialOrd)]
+pub struct TopicMatcher(TopicFilter);
+
+#[derive(Debug)]
+pub struct BadTopicMatcher;
+
+impl TopicMatcher {
+    pub fn new<S: Into<String>>(matcher: S) -> Result<Self, BadTopicMatcher> {
+        Ok(Self(
+            TopicFilter::new(matcher).map_err(|_| BadTopicMatcher)?,
+        ))
+    }
+}
+
+impl Display for TopicMatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
     }
 }
 
@@ -104,9 +126,9 @@ pub enum FilterCriteria {
     RemoveIncludePersistenceIds { persistence_ids: Vec<PersistenceId> },
     /// Include events with any of the given matching topics. A matching include overrides
     /// a matching exclude.
-    IncludeTopics { expressions: Vec<TopicFilter> },
+    IncludeTopics { expressions: Vec<TopicMatcher> },
     /// Remove a previously added `IncludeTopics`.
-    RemoveIncludeTopics { expressions: Vec<TopicFilter> },
+    RemoveIncludeTopics { expressions: Vec<TopicMatcher> },
 }
 
 /// Exclude events from all entity ids, convenience for combining with for example a topic filter
@@ -130,7 +152,7 @@ pub struct Filter {
     exclude_persistence_ids: Vec<PersistenceId>,
     include_persistence_ids: Vec<PersistenceId>,
     max_topics: usize,
-    include_topics: Vec<TopicFilter>,
+    include_topics: Vec<TopicMatcher>,
 }
 
 impl Default for Filter {
@@ -241,10 +263,10 @@ impl Filter {
         match_tags.iter().any(|mt| tags.iter().any(|t| t == mt))
     }
 
-    fn matches_topics(expressions: &[TopicFilter], topic_tag_prefix: &Tag, tags: &[Tag]) -> bool {
+    fn matches_topics(expressions: &[TopicMatcher], topic_tag_prefix: &Tag, tags: &[Tag]) -> bool {
         let topic_tag_prefix_len = topic_tag_prefix.len();
         expressions.iter().any(|r| {
-            let matcher = r.get_matcher();
+            let matcher = r.0.get_matcher();
             tags.iter()
                 .filter(|t| t.starts_with(topic_tag_prefix.as_str()))
                 .any(|t| {
@@ -485,7 +507,7 @@ mod tests {
     fn include_and_remove_include_topic() {
         let persistence_id = "a|1".parse::<PersistenceId>().unwrap();
         let tag = Tag::from("t:sport/abc/player1");
-        let expression = TopicFilter::new("sport/+/player1").unwrap();
+        let expression = TopicMatcher::new("sport/+/player1").unwrap();
 
         let envelope = TestEnvelope {
             persistence_id: persistence_id.clone(),
