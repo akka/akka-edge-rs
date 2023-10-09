@@ -120,30 +120,58 @@ pub fn exclude_all() -> FilterCriteria {
 /// A collection of criteria
 pub struct Filter {
     topic_tag_prefix: Tag,
+    max_tags: usize,
     exclude_tags: Vec<Tag>,
     include_tags: Vec<Tag>,
+    max_regex_entity_ids: usize,
     exclude_regex_entity_ids: Vec<ComparableRegex>,
     include_regex_entity_ids: Vec<ComparableRegex>,
+    max_persistence_ids: usize,
     exclude_persistence_ids: Vec<PersistenceId>,
     include_persistence_ids: Vec<PersistenceId>,
+    max_topics: usize,
     include_topics: Vec<TopicFilter>,
 }
 
-const MAX_TAGS: usize = 100;
-const MAX_REGEX_ENTITY_IDS: usize = 100;
-const MAX_PERSISTENCE_IDS: usize = 100;
-const MAX_TOPICS: usize = 100;
-
-impl Filter {
-    pub fn new(topic_tag_prefix: Tag) -> Self {
+impl Default for Filter {
+    fn default() -> Self {
         Self {
-            topic_tag_prefix,
+            topic_tag_prefix: Tag::from("t:"),
+            max_tags: 10,
             exclude_tags: vec![],
             include_tags: vec![],
+            max_regex_entity_ids: 10,
             exclude_regex_entity_ids: vec![],
             include_regex_entity_ids: vec![],
+            max_persistence_ids: 10,
             exclude_persistence_ids: vec![],
             include_persistence_ids: vec![],
+            max_topics: 10,
+            include_topics: vec![],
+        }
+    }
+}
+
+impl Filter {
+    pub fn new(
+        topic_tag_prefix: Tag,
+        max_tags: usize,
+        max_regex_entity_ids: usize,
+        max_persistence_ids: usize,
+        max_topics: usize,
+    ) -> Self {
+        Self {
+            topic_tag_prefix,
+            max_tags,
+            exclude_tags: vec![],
+            include_tags: vec![],
+            max_regex_entity_ids,
+            exclude_regex_entity_ids: vec![],
+            include_regex_entity_ids: vec![],
+            max_persistence_ids,
+            exclude_persistence_ids: vec![],
+            include_persistence_ids: vec![],
+            max_topics,
             include_topics: vec![],
         }
     }
@@ -235,34 +263,32 @@ impl Filter {
         for criterion in criteria {
             match criterion {
                 FilterCriteria::ExcludeTags { mut tags } => {
-                    merge::<_, MAX_TAGS>(&mut self.exclude_tags, &mut tags)
+                    merge(&mut self.exclude_tags, &mut tags, self.max_tags)
                 }
 
                 FilterCriteria::RemoveExcludeTags { tags } => remove(&mut self.exclude_tags, &tags),
 
                 FilterCriteria::IncludeTags { mut tags } => {
-                    merge::<_, MAX_TAGS>(&mut self.include_tags, &mut tags)
+                    merge(&mut self.include_tags, &mut tags, self.max_tags)
                 }
 
                 FilterCriteria::RemoveIncludeTags { tags } => remove(&mut self.include_tags, &tags),
 
-                FilterCriteria::ExcludeRegexEntityIds { mut matching } => {
-                    merge::<_, MAX_REGEX_ENTITY_IDS>(
-                        &mut self.exclude_regex_entity_ids,
-                        &mut matching,
-                    )
-                }
+                FilterCriteria::ExcludeRegexEntityIds { mut matching } => merge(
+                    &mut self.exclude_regex_entity_ids,
+                    &mut matching,
+                    self.max_regex_entity_ids,
+                ),
 
                 FilterCriteria::RemoveExcludeRegexEntityIds { matching } => {
                     remove(&mut self.exclude_regex_entity_ids, &matching)
                 }
 
-                FilterCriteria::IncludeRegexEntityIds { mut matching } => {
-                    merge::<_, MAX_REGEX_ENTITY_IDS>(
-                        &mut self.include_regex_entity_ids,
-                        &mut matching,
-                    )
-                }
+                FilterCriteria::IncludeRegexEntityIds { mut matching } => merge(
+                    &mut self.include_regex_entity_ids,
+                    &mut matching,
+                    self.max_regex_entity_ids,
+                ),
 
                 FilterCriteria::RemoveIncludeRegexEntityIds { matching } => {
                     remove(&mut self.include_regex_entity_ids, &matching)
@@ -270,9 +296,10 @@ impl Filter {
 
                 FilterCriteria::ExcludePersistenceIds {
                     mut persistence_ids,
-                } => merge::<_, MAX_PERSISTENCE_IDS>(
+                } => merge(
                     &mut self.exclude_persistence_ids,
                     &mut persistence_ids,
+                    self.max_persistence_ids,
                 ),
 
                 FilterCriteria::RemoveExcludePersistenceIds { persistence_ids } => {
@@ -281,12 +308,13 @@ impl Filter {
 
                 FilterCriteria::IncludePersistenceIds {
                     persistence_id_offsets,
-                } => merge::<_, MAX_PERSISTENCE_IDS>(
+                } => merge(
                     &mut self.include_persistence_ids,
                     &mut persistence_id_offsets
                         .into_iter()
                         .map(|PersistenceIdIdOffset { persistence_id, .. }| persistence_id)
                         .collect(),
+                    self.max_persistence_ids,
                 ),
 
                 FilterCriteria::RemoveIncludePersistenceIds { persistence_ids } => {
@@ -294,7 +322,7 @@ impl Filter {
                 }
 
                 FilterCriteria::IncludeTopics { mut expressions } => {
-                    merge::<_, MAX_TOPICS>(&mut self.include_topics, &mut expressions)
+                    merge(&mut self.include_topics, &mut expressions, self.max_topics)
                 }
 
                 FilterCriteria::RemoveIncludeTopics { expressions } => {
@@ -305,11 +333,11 @@ impl Filter {
     }
 }
 
-fn merge<T, const MAX_LEN: usize>(l: &mut Vec<T>, r: &mut Vec<T>)
+fn merge<T>(l: &mut Vec<T>, r: &mut Vec<T>, max_len: usize)
 where
     T: Ord,
 {
-    if l.len() + r.len() < MAX_LEN * 2 {
+    if l.len() < max_len && r.len() < max_len {
         l.append(r);
         l.sort();
         l.dedup();
@@ -355,7 +383,7 @@ mod tests {
             tags: vec![tag.clone()],
         };
 
-        let mut filter = Filter::new(Tag::from(""));
+        let mut filter = Filter::default();
 
         let criteria = vec![
             FilterCriteria::ExcludeTags {
@@ -388,7 +416,7 @@ mod tests {
             tags: vec![],
         };
 
-        let mut filter = Filter::new(Tag::from(""));
+        let mut filter = Filter::default();
 
         let criteria = vec![
             FilterCriteria::ExcludePersistenceIds {
@@ -427,7 +455,7 @@ mod tests {
             tags: vec![],
         };
 
-        let mut filter = Filter::new(Tag::from(""));
+        let mut filter = Filter::default();
 
         let criteria = vec![
             FilterCriteria::ExcludeRegexEntityIds {
@@ -464,7 +492,7 @@ mod tests {
             tags: vec![tag.clone()],
         };
 
-        let mut filter = Filter::new(Tag::from("t:"));
+        let mut filter = Filter::default();
 
         let criteria = vec![
             exclude_all(),

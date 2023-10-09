@@ -2,8 +2,9 @@
 
 use crate::proto;
 use crate::temperature::{self, EventEnvelopeMarshaler};
-use akka_persistence_rs::{EntityType, Tag};
+use akka_persistence_rs::EntityType;
 use akka_persistence_rs_commitlog::EventEnvelope as CommitLogEventEnvelope;
+use akka_projection_rs::consumer_filter::Filter;
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
 use akka_projection_rs_grpc::producer::GrpcEventFlow;
 use akka_projection_rs_grpc::{OriginId, StreamId};
@@ -92,11 +93,11 @@ pub async fn task(
     // where an upper limit of the number of envelopes in-flight is set.
 
     let producer_filter = |_: &CommitLogEventEnvelope<temperature::Event>| true;
-    let topic_tag_prefix = Tag::from("t:");
+    let consumer_filter = Filter::default();
     let event_handler = grpc_flow.handler(
         producer_filter,
         consumer_filters_receiver,
-        topic_tag_prefix,
+        consumer_filter,
         transformer,
     );
     akka_projection_rs_storage::run(

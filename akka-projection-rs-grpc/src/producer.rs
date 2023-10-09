@@ -1,7 +1,6 @@
 use akka_persistence_rs::EntityId;
 use akka_persistence_rs::EntityType;
 use akka_persistence_rs::PersistenceId;
-use akka_persistence_rs::Tag;
 use akka_persistence_rs::TimestampOffset;
 use akka_persistence_rs::WithPersistenceId;
 use akka_persistence_rs::WithSeqNr;
@@ -125,7 +124,7 @@ impl<E> GrpcEventFlow<E> {
         self,
         producer_filter: PF,
         consumer_filters_receiver: watch::Receiver<Vec<FilterCriteria>>,
-        topic_tag_prefix: Tag,
+        filter: Filter,
         transformer: T,
     ) -> GrpcEventProcessor<E, EI, PF, T>
     where
@@ -136,7 +135,7 @@ impl<E> GrpcEventFlow<E> {
             flow: self,
             producer_filter,
             consumer_filters_receiver,
-            filter: Filter::new(topic_tag_prefix),
+            filter,
             transformer,
             phantom: PhantomData,
         }
