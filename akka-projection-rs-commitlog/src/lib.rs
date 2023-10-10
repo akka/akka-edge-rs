@@ -4,7 +4,7 @@ pub mod offset_store;
 
 use std::{future::Future, marker::PhantomData, ops::Range, pin::Pin};
 
-use akka_persistence_rs::{EntityType, Offset, PersistenceId};
+use akka_persistence_rs::{Offset, PersistenceId};
 use akka_persistence_rs_commitlog::{CommitLogMarshaler, EventEnvelope};
 use akka_projection_rs::SourceProvider;
 use async_stream::stream;
@@ -17,7 +17,6 @@ use tokio_stream::{Stream, StreamExt};
 pub struct CommitLogSourceProvider<CL, E, M> {
     commit_log: CL,
     consumer_group_name: String,
-    entity_type: EntityType,
     marshaler: M,
     slice_range: Range<u32>,
     topic: Topic,
@@ -30,13 +29,7 @@ where
     M: CommitLogMarshaler<E> + Sync,
     for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
-    pub fn new(
-        commit_log: CL,
-        marshaler: M,
-        consumer_group_name: &str,
-        topic: Topic,
-        entity_type: EntityType,
-    ) -> Self {
+    pub fn new(commit_log: CL, marshaler: M, consumer_group_name: &str, topic: Topic) -> Self {
         // When it comes to having a projection sourced from a local
         // commit log, there's little benefit if having many of them.
         // We therefore manage all slices from just one projection.
@@ -47,7 +40,6 @@ where
             marshaler,
             consumer_group_name,
             topic,
-            entity_type,
             slice_range.get(0).cloned().unwrap(),
         )
     }
@@ -57,7 +49,6 @@ where
         marshaler: M,
         consumer_group_name: &str,
         topic: Topic,
-        entity_type: EntityType,
         slice_range: Range<u32>,
     ) -> Self {
         Self {
@@ -66,7 +57,6 @@ where
             marshaler,
             slice_range,
             topic,
-            entity_type,
             phantom: PhantomData,
         }
     }
@@ -102,7 +92,7 @@ where
             while let Some(consumer_record) = records.next().await {
                 if let Some(record_entity_id) = marshaler.to_entity_id(&consumer_record) {
                     let persistence_id =
-                        PersistenceId::new(self.entity_type.clone(), record_entity_id);
+                        PersistenceId::new(marshaler.entity_type(), record_entity_id);
                     if self.slice_range.contains(&persistence_id.slice()) {
                         if let Some(envelope) = marshaler
                             .envelope(persistence_id.entity_id, consumer_record)
@@ -144,7 +134,7 @@ mod tests {
     use std::{env, fs};
 
     use super::*;
-    use akka_persistence_rs::EntityId;
+    use akka_persistence_rs::{EntityId, EntityType};
     use chrono::{DateTime, Utc};
     use serde::Deserialize;
     use streambed::commit_log::{ConsumerRecord, Header, Key, ProducerRecord};
@@ -173,6 +163,10 @@ mod tests {
 
     #[async_trait]
     impl CommitLogMarshaler<MyEvent> for MyEventMarshaler {
+        fn entity_type(&self) -> EntityType {
+            EntityType::from("some-topic")
+        }
+
         fn to_compaction_key(&self, _entity_id: &EntityId, _event: &MyEvent) -> Option<Key> {
             panic!("should not be called")
         }
@@ -193,11 +187,12 @@ mod tests {
             let value = String::from_utf8(record.value).ok()?;
             let event = MyEvent { value };
             record.timestamp.map(|timestamp| EventEnvelope {
-                entity_id,
+                persistence_id: PersistenceId::new(self.entity_type(), entity_id),
                 seq_nr: 1,
                 timestamp,
                 event,
                 offset: 0,
+                tags: vec![],
             })
         }
 
@@ -239,6 +234,7 @@ mod tests {
 
         let entity_type = EntityType::from("some-topic");
         let entity_id = EntityId::from("some-entity");
+        let persistence_id = PersistenceId::new(entity_type.clone(), entity_id.clone());
         let topic = Topic::from("some-topic");
         let event_value = "some value".to_string();
 
@@ -263,13 +259,12 @@ mod tests {
             MyEventMarshaler,
             "some-consumer",
             topic,
-            entity_type,
         );
 
         let mut envelopes = source_provider.source(|| async { None }).await;
         let envelope = envelopes.next().await.unwrap();
 
-        assert_eq!(envelope.entity_id, entity_id,);
+        assert_eq!(envelope.persistence_id, persistence_id);
         assert_eq!(envelope.event, MyEvent { value: event_value },);
     }
 }

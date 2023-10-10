@@ -4,15 +4,16 @@ use crate::proto;
 use crate::temperature::{self, EventEnvelopeMarshaler};
 use akka_persistence_rs::EntityType;
 use akka_persistence_rs_commitlog::EventEnvelope as CommitLogEventEnvelope;
+use akka_projection_rs::consumer_filter::Filter;
 use akka_projection_rs_commitlog::CommitLogSourceProvider;
-use akka_projection_rs_grpc::producer::GrpcEventProducer;
+use akka_projection_rs_grpc::producer::GrpcEventFlow;
 use akka_projection_rs_grpc::{OriginId, StreamId};
 use std::sync::Arc;
 use std::{path::PathBuf, time::Duration};
 use streambed::commit_log::Topic;
 use streambed_confidant::FileSecretStore;
 use streambed_logged::FileLog;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tonic::transport::{Channel, Uri};
 
 // Apply sensor observations to a remote consumer.
@@ -25,21 +26,25 @@ pub async fn task(
     kill_switch: oneshot::Receiver<()>,
     state_storage_path: PathBuf,
 ) {
+    let entity_type = EntityType::from(temperature::ENTITY_TYPE);
+
     // Establish a sink of envelopes that will be forwarded
     // on to a consumer via gRPC event producer.
 
+    let (consumer_filters, consumer_filters_receiver) = watch::channel(vec![]);
     let (grpc_producer, grpc_producer_receiver) = mpsc::channel(10);
 
-    let grpc_producer =
-        GrpcEventProducer::new(EntityType::from(temperature::ENTITY_TYPE), grpc_producer);
-
     let (_task_kill_switch, task_kill_switch_receiver) = oneshot::channel();
+
     tokio::spawn(async {
-        let channel = Channel::builder(event_consumer_addr);
+        let consumer_endpoint = Channel::builder(event_consumer_addr);
+        let consumer_connector = || consumer_endpoint.connect();
+
         akka_projection_rs_grpc::producer::run(
-            || channel.connect(),
+            consumer_connector,
             OriginId::from("edge-iot-service"),
             StreamId::from("temperature-events"),
+            consumer_filters,
             grpc_producer_receiver,
             task_kill_switch_receiver,
         )
@@ -51,12 +56,12 @@ pub async fn task(
     let source_provider = CommitLogSourceProvider::new(
         commit_log,
         EventEnvelopeMarshaler {
+            entity_type: entity_type.clone(),
             events_key_secret_path: Arc::from(events_key_secret_path),
             secret_store: secret_store.clone(),
         },
         "iot-service-projection",
         Topic::from(temperature::EVENTS_TOPIC),
-        EntityType::from(temperature::ENTITY_TYPE),
     );
 
     // Optionally transform events from the commit log to an event the
@@ -78,10 +83,20 @@ pub async fn task(
     // to remember the offset consumed from the commit log. This then
     // permits us to restart from a specific point in the source given
     // restarts.
-    // A handler is formed from the gRPC producer. This handler will
+    // A handler is formed from the gRPC flow. This handler will
     // call upon the transformer function to, in turn, produce the
     // gRPC events to a remote consumer. The handler is a "flowing" one
     // where an upper limit of the number of envelopes in-flight is set.
+
+    let grpc_flow = GrpcEventFlow::new(entity_type, grpc_producer);
+    let producer_filter = |_: &CommitLogEventEnvelope<temperature::Event>| true;
+    let consumer_filter = Filter::default();
+    let event_handler = grpc_flow.handler(
+        producer_filter,
+        consumer_filters_receiver,
+        consumer_filter,
+        transformer,
+    );
 
     akka_projection_rs_storage::run(
         &secret_store,
@@ -89,7 +104,7 @@ pub async fn task(
         &state_storage_path,
         kill_switch,
         source_provider,
-        grpc_producer.handler(transformer),
+        event_handler,
         Duration::from_millis(100),
     )
     .await

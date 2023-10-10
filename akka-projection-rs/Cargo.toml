@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 async-trait = { workspace = true }
 chrono = { workspace = true }
+mqtt-protocol = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true }
 smol_str = { workspace = true }
 tokio = { workspace = true }

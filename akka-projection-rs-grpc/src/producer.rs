@@ -2,13 +2,17 @@ use akka_persistence_rs::EntityId;
 use akka_persistence_rs::EntityType;
 use akka_persistence_rs::PersistenceId;
 use akka_persistence_rs::TimestampOffset;
-use akka_persistence_rs::WithEntityId;
+use akka_persistence_rs::WithPersistenceId;
 use akka_persistence_rs::WithSeqNr;
+use akka_persistence_rs::WithTags;
 use akka_persistence_rs::WithTimestampOffset;
+use akka_projection_rs::consumer_filter::Filter;
+use akka_projection_rs::consumer_filter::FilterCriteria;
 use akka_projection_rs::HandlerError;
 use akka_projection_rs::PendingHandler;
 use async_stream::stream;
 use async_trait::async_trait;
+use futures::future;
 use log::debug;
 use log::warn;
 use prost::Name;
@@ -20,6 +24,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tokio_stream::StreamExt;
 use tonic::transport::Channel;
 use tonic::Request;
@@ -40,21 +45,22 @@ pub struct Transformation<E> {
 
 /// Processes events transformed from some unknown event envelope (EI)
 /// to then pass on to a gRPC event producer.
-pub struct GrpcEventProcessor<E, EI, F>
-where
-    F: Fn(&EI) -> Option<E>,
-{
-    producer: GrpcEventProducer<E>,
-    transformer: F,
+pub struct GrpcEventProcessor<E, EI, PF, T> {
+    flow: GrpcEventFlow<E>,
+    producer_filter: PF,
+    consumer_filters_receiver: watch::Receiver<Vec<FilterCriteria>>,
+    filter: Filter,
+    transformer: T,
     phantom: PhantomData<EI>,
 }
 
 #[async_trait]
-impl<EI, E, F> PendingHandler for GrpcEventProcessor<E, EI, F>
+impl<EI, E, PF, T> PendingHandler for GrpcEventProcessor<E, EI, PF, T>
 where
-    EI: WithEntityId + WithSeqNr + WithTimestampOffset + Send,
+    EI: WithPersistenceId + WithSeqNr + WithTags + WithTimestampOffset + Send,
     E: Send,
-    F: Fn(&EI) -> Option<E> + Send,
+    PF: Fn(&EI) -> bool + Send,
+    T: Fn(&EI) -> Option<E> + Send,
 {
     type Envelope = EI;
 
@@ -64,14 +70,25 @@ where
         &mut self,
         envelope: Self::Envelope,
     ) -> Result<Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>>, HandlerError> {
-        let event = (self.transformer)(&envelope);
+        if self.consumer_filters_receiver.has_changed().unwrap_or(true) {
+            self.filter
+                .update(self.consumer_filters_receiver.borrow().clone());
+        };
+
+        let event = if (self.producer_filter)(&envelope) && self.filter.matches(&envelope) {
+            (self.transformer)(&envelope)
+        } else {
+            // Gaps are ok given a filter situation.
+            return Ok(Box::pin(future::ready(Ok(()))));
+        };
+
         let transformation = Transformation {
-            entity_id: envelope.entity_id(),
+            entity_id: envelope.persistence_id().entity_id.clone(),
             seq_nr: envelope.seq_nr(),
             offset: envelope.timestamp_offset(),
             event,
         };
-        let result = self.producer.process(transformation).await;
+        let result = self.flow.process(transformation).await;
         if let Ok(receiver_reply) = result {
             Ok(Box::pin(async {
                 receiver_reply.await.map_err(|_| HandlerError)
@@ -82,13 +99,13 @@ where
     }
 }
 
-/// Produce gRPC events given a user-supplied transformation function.
-pub struct GrpcEventProducer<E> {
+/// Transform and forward gRPC events given a user-supplied transformation function.
+pub struct GrpcEventFlow<E> {
     entity_type: EntityType,
     grpc_producer: mpsc::Sender<(EventEnvelope<E>, oneshot::Sender<()>)>,
 }
 
-impl<E> GrpcEventProducer<E> {
+impl<E> GrpcEventFlow<E> {
     pub fn new(
         entity_type: EntityType,
         grpc_producer: mpsc::Sender<(EventEnvelope<E>, oneshot::Sender<()>)>,
@@ -99,12 +116,25 @@ impl<E> GrpcEventProducer<E> {
         }
     }
 
-    pub fn handler<EI, F>(self, transformer: F) -> GrpcEventProcessor<E, EI, F>
+    /// Produces a handler for this flow. The handler will receive events,
+    /// apply filters and, if the filters match, transform and forward events
+    /// on to a gRPC producer.
+    pub fn handler<EI, PF, T>(
+        self,
+        producer_filter: PF,
+        consumer_filters_receiver: watch::Receiver<Vec<FilterCriteria>>,
+        filter: Filter,
+        transformer: T,
+    ) -> GrpcEventProcessor<E, EI, PF, T>
     where
-        F: Fn(&EI) -> Option<E>,
+        PF: Fn(&EI) -> bool,
+        T: Fn(&EI) -> Option<E>,
     {
         GrpcEventProcessor {
-            producer: self,
+            flow: self,
+            producer_filter,
+            consumer_filters_receiver,
+            filter,
             transformer,
             phantom: PhantomData,
         }
@@ -142,6 +172,7 @@ pub async fn run<E, EC, ECR>(
     event_consumer_channel: EC,
     origin_id: StreamId,
     stream_id: StreamId,
+    consumer_filters: watch::Sender<Vec<FilterCriteria>>,
     mut envelopes: mpsc::Receiver<(EventEnvelope<E>, oneshot::Sender<()>)>,
     mut kill_switch: oneshot::Receiver<()>,
 ) where
@@ -241,8 +272,14 @@ pub async fn run<E, EC, ECR>(
                         Some(Ok(proto::ConsumeEventOut {
                             message: Some(message),
                         })) = stream_outs.next() => match message {
-                            proto::consume_event_out::Message::Start(proto::ConsumerEventStart { .. }) => {
+                            proto::consume_event_out::Message::Start(proto::ConsumerEventStart { filter }) => {
                                 debug!("Starting the protocol");
+                                let _ = consumer_filters.send(
+                                    filter
+                                        .into_iter()
+                                        .flat_map(|f| f.try_into())
+                                        .collect(),
+                                );
                                 break;
                             }
                             _ => {
@@ -352,7 +389,9 @@ mod tests {
                         yield Ok(proto::ConsumeEventOut {
                             message: Some(proto::consume_event_out::Message::Start(
                                 proto::ConsumerEventStart {
-                                    filter: vec![]
+                                    filter: vec![proto::FilterCriteria {
+                                        message: Some(proto::filter_criteria::Message::ExcludeEntityIds(proto::ExcludeEntityIds { entity_ids: vec![] })),
+                                    }]
                                 },
                             )),
                         });
@@ -408,6 +447,7 @@ mod tests {
                 .unwrap();
         });
 
+        let (consumer_filters, mut consumer_filters_receiver) = watch::channel(vec![]);
         let (sender, receiver) = mpsc::channel(10);
         let (_task_kill_switch, task_kill_switch_receiver) = oneshot::channel();
         tokio::spawn(async move {
@@ -416,6 +456,7 @@ mod tests {
                 || channel.connect(),
                 OriginId::from("some-origin-id"),
                 StreamId::from("some-stream-id"),
+                consumer_filters,
                 receiver,
                 task_kill_switch_receiver,
             )
@@ -441,6 +482,9 @@ mod tests {
             ))
             .await
             .is_ok());
+
+        assert!(consumer_filters_receiver.changed().await.is_ok());
+        assert!(!consumer_filters_receiver.borrow().is_empty());
 
         assert!(reply_receiver.await.is_ok());
 

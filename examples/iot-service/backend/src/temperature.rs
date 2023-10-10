@@ -5,6 +5,7 @@ use std::{io, num::NonZeroUsize, sync::Arc};
 use akka_persistence_rs::{
     effect::{self, emit_event, reply, then, unhandled, Effect, EffectExt},
     entity::{Context, EventSourcedBehavior},
+    EntityType,
 };
 use akka_persistence_rs::{
     entity_manager::{self},
@@ -117,6 +118,7 @@ impl EventSourcedBehavior for Behavior {
 // keys in any way required.
 
 pub struct EventEnvelopeMarshaler {
+    pub entity_type: EntityType,
     pub events_key_secret_path: Arc<str>,
     pub secret_store: FileSecretStore,
 }
@@ -134,6 +136,10 @@ const EVENT_ID_BIT_MASK: u64 = 0xFFFFFFFF;
 
 #[async_trait]
 impl CommitLogMarshaler<Event> for EventEnvelopeMarshaler {
+    fn entity_type(&self) -> EntityType {
+        self.entity_type.clone()
+    }
+
     fn to_compaction_key(&self, entity_id: &EntityId, event: &Event) -> Option<Key> {
         let record_type = match event {
             Event::TemperatureRead { .. } => Some(0),
@@ -227,6 +233,7 @@ pub async fn task(
     let file_log_topic_adapter = CommitLogTopicAdapter::new(
         commit_log,
         EventEnvelopeMarshaler {
+            entity_type: EntityType::from(ENTITY_TYPE),
             events_key_secret_path: Arc::from(events_key_secret_path),
             secret_store,
         },

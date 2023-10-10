@@ -40,8 +40,10 @@ impl SourceProvider for TestSourceProvider {
         FR: Future<Output = Option<Offset>> + Send,
     {
         let _ = offset().await;
-        Box::pin(stream!(for offset in 0..NUM_EVENTS as u64 {
-            yield TestEnvelope { offset };
+        Box::pin(stream!(loop {
+            for offset in 0..NUM_EVENTS as u64 {
+                yield TestEnvelope { offset };
+            }
         }))
     }
 }
@@ -58,6 +60,7 @@ impl Handler for TestHandler {
         const LAST_OFFSET: u64 = NUM_EVENTS as u64 - 1;
         if envelope.offset == LAST_OFFSET {
             self.events_processed.notify_one();
+            return Err(HandlerError);
         }
         Ok(())
     }

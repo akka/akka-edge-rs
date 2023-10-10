@@ -2,7 +2,8 @@
 
 use akka_persistence_rs::{
     entity_manager::{EventEnvelope as EntityManagerEventEnvelope, Handler, SourceProvider},
-    EntityId, Offset, TimestampOffset, WithEntityId, WithOffset, WithSeqNr, WithTimestampOffset,
+    EntityId, EntityType, Offset, PersistenceId, Tag, TimestampOffset, WithOffset,
+    WithPersistenceId, WithSeqNr, WithTags, WithTimestampOffset,
 };
 use async_stream::stream;
 use async_trait::async_trait;
@@ -19,39 +20,22 @@ use streambed::{
 use tokio_stream::{Stream, StreamExt};
 
 /// An envelope wraps a commit log event associated with a specific entity.
+/// Tags are not presently considered useful at the edge. A remote consumer would be interested
+/// in all events from the edge in most cases, and the edge itself decides what to publish
+/// (producer defined filter).
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventEnvelope<E> {
-    pub entity_id: EntityId,
+    pub persistence_id: PersistenceId,
     pub seq_nr: u64,
     pub timestamp: DateTime<Utc>,
     pub event: E,
     pub offset: CommitLogOffset,
+    pub tags: Vec<Tag>,
 }
 
-impl<E> EventEnvelope<E> {
-    pub fn new<EI>(
-        entity_id: EI,
-        seq_nr: u64,
-        timestamp: DateTime<Utc>,
-        event: E,
-        offset: CommitLogOffset,
-    ) -> Self
-    where
-        EI: Into<EntityId>,
-    {
-        Self {
-            entity_id: entity_id.into(),
-            seq_nr,
-            timestamp,
-            event,
-            offset,
-        }
-    }
-}
-
-impl<E> WithEntityId for EventEnvelope<E> {
-    fn entity_id(&self) -> EntityId {
-        self.entity_id.clone()
+impl<E> WithPersistenceId for EventEnvelope<E> {
+    fn persistence_id(&self) -> &PersistenceId {
+        &self.persistence_id
     }
 }
 
@@ -64,6 +48,12 @@ impl<E> WithOffset for EventEnvelope<E> {
 impl<E> WithSeqNr for EventEnvelope<E> {
     fn seq_nr(&self) -> u64 {
         self.seq_nr
+    }
+}
+
+impl<E> WithTags for EventEnvelope<E> {
+    fn tags(&self) -> &[akka_persistence_rs::Tag] {
+        &self.tags
     }
 }
 
@@ -84,6 +74,9 @@ pub trait CommitLogMarshaler<E>
 where
     for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
+    /// Declares the entity type to the marshaler.
+    fn entity_type(&self) -> EntityType;
+
     /// Provide a key we can use for the purposes of log compaction.
     /// A key would generally comprise and event type value held in
     /// the high bits, and the entity id in the lower bits.
@@ -159,8 +152,13 @@ where
                 }
             });
             seq_nr.and_then(|seq_nr| {
-                record.timestamp.map(|timestamp| {
-                    EventEnvelope::new(entity_id, seq_nr, timestamp, event, record.offset)
+                record.timestamp.map(|timestamp| EventEnvelope {
+                    persistence_id: PersistenceId::new(self.entity_type(), entity_id),
+                    seq_nr,
+                    timestamp,
+                    event,
+                    offset: record.offset,
+                    tags: vec![],
                 })
             })
         })
@@ -291,7 +289,7 @@ where
                             marshaler.envelope(record_entity_id, consumer_record).await
                         {
                             yield EntityManagerEventEnvelope::new(
-                                envelope.entity_id,
+                                envelope.persistence_id.entity_id,
                                 envelope.seq_nr,
                                 envelope.timestamp,
                                 envelope.event,
@@ -328,7 +326,7 @@ where
                                 marshaler.envelope(record_entity_id, consumer_record).await
                             {
                                 yield EntityManagerEventEnvelope::new(
-                                    envelope.entity_id,
+                                    envelope.persistence_id.entity_id,
                                     envelope.seq_nr,
                                     envelope.timestamp,
                                     envelope.event,
@@ -476,6 +474,10 @@ mod tests {
 
     #[async_trait]
     impl CommitLogMarshaler<MyEvent> for MyEventMarshaler {
+        fn entity_type(&self) -> EntityType {
+            EntityType::from("some-entity-type")
+        }
+
         fn to_compaction_key(&self, _entity_id: &EntityId, _event: &MyEvent) -> Option<Key> {
             panic!("should not be called")
         }
@@ -496,11 +498,12 @@ mod tests {
             let value = String::from_utf8(record.value).ok()?;
             let event = MyEvent { value };
             record.timestamp.map(|timestamp| EventEnvelope {
-                entity_id,
+                persistence_id: PersistenceId::new(self.entity_type(), entity_id),
                 seq_nr: 1,
                 timestamp,
                 event,
                 offset: 0,
+                tags: vec![],
             })
         }
 

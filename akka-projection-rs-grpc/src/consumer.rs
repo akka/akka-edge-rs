@@ -493,7 +493,7 @@ mod tests {
         let (consumer_filters, consumer_filters_receiver) =
             watch::channel(vec![FilterCriteria::IncludeEntityIds {
                 entity_id_offsets: vec![EntityIdOffset {
-                    entity_id: entity_id.clone(),
+                    entity_id: persistence_id.entity_id.clone(),
                     seq_nr: 0,
                 }],
             }]);

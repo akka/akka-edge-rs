@@ -159,7 +159,7 @@ mod tests {
     use std::{collections::HashMap, env, fs, future::Future, pin::Pin};
 
     use super::*;
-    use akka_persistence_rs::EntityId;
+    use akka_persistence_rs::{EntityId, EntityType, PersistenceId};
     use akka_persistence_rs_commitlog::EventEnvelope;
     use akka_projection_rs::HandlerError;
     use async_stream::stream;
@@ -248,7 +248,7 @@ mod tests {
     const MIN_SAVE_OFFSET_INTERVAL: Duration = Duration::from_millis(100);
 
     struct MySourceProvider {
-        entity_id: EntityId,
+        persistence_id: PersistenceId,
         event_value: String,
     }
 
@@ -264,16 +264,28 @@ mod tests {
             F: Fn() -> FR + Send + Sync,
             FR: Future<Output = Option<Offset>> + Send,
         {
-            Box::pin(stream! {
-                if offset().await.is_none() {
-                    yield EventEnvelope::new(self.entity_id.clone(), 1, Utc::now(), MyEvent { value:self.event_value.clone() }, 0);
+            Box::pin(
+                stream! {
+                    if offset().await.is_none() {
+                        yield EventEnvelope {
+                            persistence_id: self.persistence_id.clone(),
+                            seq_nr: 1,
+                            timestamp: Utc::now(),
+                            event: MyEvent {
+                                value: self.event_value.clone(),
+                            },
+                            offset: 0,
+                            tags: vec![]
+                        }
+                    }
                 }
-            }.chain(stream::pending()))
+                .chain(stream::pending()),
+            )
         }
     }
 
     struct MyHandler {
-        entity_id: EntityId,
+        persistence_id: PersistenceId,
         event_value: String,
     }
 
@@ -283,7 +295,7 @@ mod tests {
 
         /// Process an envelope.
         async fn process(&mut self, envelope: Self::Envelope) -> Result<(), HandlerError> {
-            assert_eq!(envelope.entity_id, self.entity_id);
+            assert_eq!(envelope.persistence_id, self.persistence_id);
             assert_eq!(
                 envelope.event,
                 MyEvent {
@@ -295,7 +307,7 @@ mod tests {
     }
 
     struct MyHandlerPending {
-        entity_id: EntityId,
+        persistence_id: PersistenceId,
         event_value: String,
     }
 
@@ -311,7 +323,7 @@ mod tests {
             envelope: Self::Envelope,
         ) -> Result<Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>>, HandlerError>
         {
-            assert_eq!(envelope.entity_id, self.entity_id);
+            assert_eq!(envelope.persistence_id, self.persistence_id);
             assert_eq!(
                 envelope.event,
                 MyEvent {
@@ -332,7 +344,9 @@ mod tests {
 
         // Scaffolding
 
+        let entity_type = EntityType::from("some-entity-type");
         let entity_id = EntityId::from("some-entity");
+        let persistence_id = PersistenceId::new(entity_type, entity_id);
         let event_value = "some value".to_string();
 
         // Process an event.
@@ -348,11 +362,11 @@ mod tests {
                 &task_storage_path,
                 registration_projection_command_receiver,
                 MySourceProvider {
-                    entity_id: entity_id.clone(),
+                    persistence_id: persistence_id.clone(),
                     event_value: event_value.clone(),
                 },
                 MyHandler {
-                    entity_id: entity_id.clone(),
+                    persistence_id: persistence_id.clone(),
                     event_value: event_value.clone(),
                 },
                 MIN_SAVE_OFFSET_INTERVAL,
@@ -383,7 +397,9 @@ mod tests {
 
         // Scaffolding
 
+        let entity_type = EntityType::from("some-entity-type");
         let entity_id = EntityId::from("some-entity");
+        let persistence_id = PersistenceId::new(entity_type, entity_id);
         let event_value = "some value".to_string();
 
         // Process an event.
@@ -398,11 +414,11 @@ mod tests {
                 &task_storage_path,
                 registration_projection_command_receiver,
                 MySourceProvider {
-                    entity_id: entity_id.clone(),
+                    persistence_id: persistence_id.clone(),
                     event_value: event_value.clone(),
                 },
                 MyHandlerPending {
-                    entity_id: entity_id.clone(),
+                    persistence_id: persistence_id.clone(),
                     event_value: event_value.clone(),
                 },
                 MIN_SAVE_OFFSET_INTERVAL,
