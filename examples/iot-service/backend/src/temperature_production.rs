@@ -35,7 +35,6 @@ pub async fn task(
     let (grpc_producer, grpc_producer_receiver) = mpsc::channel(10);
 
     let (_task_kill_switch, task_kill_switch_receiver) = oneshot::channel();
-    let task_entity_type = entity_type.clone();
 
     tokio::spawn(async {
         let consumer_endpoint = Channel::builder(event_consumer_addr);
@@ -46,7 +45,6 @@ pub async fn task(
             OriginId::from("edge-iot-service"),
             StreamId::from("temperature-events"),
             consumer_filters,
-            task_entity_type,
             grpc_producer_receiver,
             task_kill_switch_receiver,
         )

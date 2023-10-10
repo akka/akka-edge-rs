@@ -31,7 +31,6 @@ use tonic::Request;
 
 use crate::delayer::Delayer;
 use crate::proto;
-use crate::to_filter_criteria;
 use crate::EventEnvelope;
 use crate::StreamId;
 
@@ -174,7 +173,6 @@ pub async fn run<E, EC, ECR>(
     origin_id: StreamId,
     stream_id: StreamId,
     consumer_filters: watch::Sender<Vec<FilterCriteria>>,
-    entity_type: EntityType,
     mut envelopes: mpsc::Receiver<(EventEnvelope<E>, oneshot::Sender<()>)>,
     mut kill_switch: oneshot::Receiver<()>,
 ) where
@@ -279,7 +277,7 @@ pub async fn run<E, EC, ECR>(
                                 let _ = consumer_filters.send(
                                     filter
                                         .into_iter()
-                                        .flat_map(|f| to_filter_criteria(entity_type.clone(), f))
+                                        .flat_map(|f| f.try_into())
                                         .collect(),
                                 );
                                 break;
@@ -459,7 +457,6 @@ mod tests {
                 OriginId::from("some-origin-id"),
                 StreamId::from("some-stream-id"),
                 consumer_filters,
-                EntityType::from("some-entity-type"),
                 receiver,
                 task_kill_switch_receiver,
             )

@@ -27,13 +27,13 @@
 
 use std::fmt::Display;
 
-use akka_persistence_rs::{EntityId, PersistenceId, Tag, WithPersistenceId, WithTags};
+use akka_persistence_rs::{EntityId, Tag, WithPersistenceId, WithTags};
 use mqtt::{TopicFilter, TopicNameRef};
 use regex::Regex;
 
 #[derive(Clone)]
-pub struct PersistenceIdIdOffset {
-    pub persistence_id: PersistenceId,
+pub struct EntityIdOffset {
+    pub entity_id: EntityId,
     // If this is defined (> 0) events are replayed from the given
     // sequence number (inclusive).
     pub seq_nr: u64,
@@ -109,21 +109,21 @@ pub enum FilterCriteria {
     IncludeRegexEntityIds { matching: Vec<ComparableRegex> },
     /// Remove a previously added `IncludeRegexEntityIds`.
     RemoveIncludeRegexEntityIds { matching: Vec<ComparableRegex> },
-    /// Exclude events for entities with the given persistence ids,
+    /// Exclude events for entities with the given entity ids,
     /// unless there is a matching include filter that overrides the exclude.
-    ExcludePersistenceIds { persistence_ids: Vec<PersistenceId> },
-    /// Remove a previously added `ExcludePersistenceIds`.
-    RemoveExcludePersistenceIds { persistence_ids: Vec<PersistenceId> },
-    /// Include events for entities with the given persistence ids. A matching include overrides
+    ExcludeEntityIds { entity_ids: Vec<EntityId> },
+    /// Remove a previously added `ExcludeEntityIds`.
+    RemoveExcludeEntityIds { entity_ids: Vec<EntityId> },
+    /// Include events for entities with the given entity ids. A matching include overrides
     /// a matching exclude.
     ///
     /// For the given entity ids a `seq_nr` can be defined to replay all events for the entity
     /// from the sequence number (inclusive). If `seq_nr` is 0 events will not be replayed.
-    IncludePersistenceIds {
-        persistence_id_offsets: Vec<PersistenceIdIdOffset>,
+    IncludeEntityIds {
+        entity_id_offsets: Vec<EntityIdOffset>,
     },
-    /// Remove a previously added `IncludePersistenceIds`.
-    RemoveIncludePersistenceIds { persistence_ids: Vec<PersistenceId> },
+    /// Remove a previously added `IncludeEntityIds`.
+    RemoveIncludeEntityIds { entity_ids: Vec<EntityId> },
     /// Include events with any of the given matching topics. A matching include overrides
     /// a matching exclude.
     IncludeTopics { expressions: Vec<TopicMatcher> },
@@ -148,9 +148,9 @@ pub struct Filter {
     max_regex_entity_ids: usize,
     exclude_regex_entity_ids: Vec<ComparableRegex>,
     include_regex_entity_ids: Vec<ComparableRegex>,
-    max_persistence_ids: usize,
-    exclude_persistence_ids: Vec<PersistenceId>,
-    include_persistence_ids: Vec<PersistenceId>,
+    max_entity_ids: usize,
+    exclude_entity_ids: Vec<EntityId>,
+    include_entity_ids: Vec<EntityId>,
     max_topics: usize,
     include_topics: Vec<TopicMatcher>,
 }
@@ -165,9 +165,9 @@ impl Default for Filter {
             max_regex_entity_ids: 10,
             exclude_regex_entity_ids: vec![],
             include_regex_entity_ids: vec![],
-            max_persistence_ids: 10,
-            exclude_persistence_ids: vec![],
-            include_persistence_ids: vec![],
+            max_entity_ids: 10,
+            exclude_entity_ids: vec![],
+            include_entity_ids: vec![],
             max_topics: 10,
             include_topics: vec![],
         }
@@ -179,7 +179,7 @@ impl Filter {
         topic_tag_prefix: Tag,
         max_tags: usize,
         max_regex_entity_ids: usize,
-        max_persistence_ids: usize,
+        max_entity_ids: usize,
         max_topics: usize,
     ) -> Self {
         Self {
@@ -190,9 +190,9 @@ impl Filter {
             max_regex_entity_ids,
             exclude_regex_entity_ids: vec![],
             include_regex_entity_ids: vec![],
-            max_persistence_ids,
-            exclude_persistence_ids: vec![],
-            include_persistence_ids: vec![],
+            max_entity_ids,
+            exclude_entity_ids: vec![],
+            include_entity_ids: vec![],
             max_topics,
             include_topics: vec![],
         }
@@ -208,12 +208,12 @@ impl Filter {
         let entity_id = &persistence_id.entity_id;
 
         if self.matches_exclude_tags(tags)
-            || self.matches_exclude_persistence_ids(persistence_id)
+            || self.matches_exclude_entity_ids(entity_id)
             || self.matches_exclude_regex_entity_ids(entity_id)
         {
             self.matches_include_tags(tags)
                 || self.matches_include_topics(tags)
-                || self.matches_include_persistence_ids(persistence_id)
+                || self.matches_include_entity_ids(entity_id)
                 || self.matches_include_regex_entity_ids(entity_id)
         } else {
             true
@@ -228,12 +228,12 @@ impl Filter {
         Self::matches_regex_entity_ids(&self.include_regex_entity_ids, entity_id)
     }
 
-    fn matches_exclude_persistence_ids(&self, persistence_id: &PersistenceId) -> bool {
-        Self::matches_persistence_ids(&self.exclude_persistence_ids, persistence_id)
+    fn matches_exclude_entity_ids(&self, entity_id: &EntityId) -> bool {
+        Self::matches_entity_ids(&self.exclude_entity_ids, entity_id)
     }
 
-    fn matches_include_persistence_ids(&self, persistence_id: &PersistenceId) -> bool {
-        Self::matches_persistence_ids(&self.include_persistence_ids, persistence_id)
+    fn matches_include_entity_ids(&self, entity_id: &EntityId) -> bool {
+        Self::matches_entity_ids(&self.include_entity_ids, entity_id)
     }
 
     fn matches_exclude_tags(&self, tags: &[Tag]) -> bool {
@@ -252,11 +252,8 @@ impl Filter {
         matching.iter().any(|r| r.0.is_match(entity_id))
     }
 
-    fn matches_persistence_ids(
-        persistence_ids: &[PersistenceId],
-        persistence_id: &PersistenceId,
-    ) -> bool {
-        persistence_ids.iter().any(|pi| pi == persistence_id)
+    fn matches_entity_ids(entity_ids: &[EntityId], entity_id: &EntityId) -> bool {
+        entity_ids.iter().any(|pi| pi == entity_id)
     }
 
     fn matches_tags(match_tags: &[Tag], tags: &[Tag]) -> bool {
@@ -316,31 +313,27 @@ impl Filter {
                     remove(&mut self.include_regex_entity_ids, &matching)
                 }
 
-                FilterCriteria::ExcludePersistenceIds {
-                    mut persistence_ids,
-                } => merge(
-                    &mut self.exclude_persistence_ids,
-                    &mut persistence_ids,
-                    self.max_persistence_ids,
+                FilterCriteria::ExcludeEntityIds { mut entity_ids } => merge(
+                    &mut self.exclude_entity_ids,
+                    &mut entity_ids,
+                    self.max_entity_ids,
                 ),
 
-                FilterCriteria::RemoveExcludePersistenceIds { persistence_ids } => {
-                    remove(&mut self.exclude_persistence_ids, &persistence_ids)
+                FilterCriteria::RemoveExcludeEntityIds { entity_ids } => {
+                    remove(&mut self.exclude_entity_ids, &entity_ids)
                 }
 
-                FilterCriteria::IncludePersistenceIds {
-                    persistence_id_offsets,
-                } => merge(
-                    &mut self.include_persistence_ids,
-                    &mut persistence_id_offsets
+                FilterCriteria::IncludeEntityIds { entity_id_offsets } => merge(
+                    &mut self.include_entity_ids,
+                    &mut entity_id_offsets
                         .into_iter()
-                        .map(|PersistenceIdIdOffset { persistence_id, .. }| persistence_id)
+                        .map(|EntityIdOffset { entity_id, .. }| entity_id)
                         .collect(),
-                    self.max_persistence_ids,
+                    self.max_entity_ids,
                 ),
 
-                FilterCriteria::RemoveIncludePersistenceIds { persistence_ids } => {
-                    remove(&mut self.include_persistence_ids, &persistence_ids)
+                FilterCriteria::RemoveIncludeEntityIds { entity_ids } => {
+                    remove(&mut self.include_entity_ids, &entity_ids)
                 }
 
                 FilterCriteria::IncludeTopics { mut expressions } => {
@@ -375,6 +368,8 @@ where
 
 #[cfg(test)]
 mod tests {
+
+    use akka_persistence_rs::PersistenceId;
 
     use super::*;
 
@@ -430,8 +425,9 @@ mod tests {
     }
 
     #[test]
-    fn exclude_include_and_remove_include_persistence_id_and_remove_exclude_persistence_id() {
+    fn exclude_include_and_remove_include_entity_id_and_remove_exclude_entity_id() {
         let persistence_id = "a|1".parse::<PersistenceId>().unwrap();
+        let entity_id = persistence_id.entity_id.clone();
 
         let envelope = TestEnvelope {
             persistence_id: persistence_id.clone(),
@@ -441,12 +437,12 @@ mod tests {
         let mut filter = Filter::default();
 
         let criteria = vec![
-            FilterCriteria::ExcludePersistenceIds {
-                persistence_ids: vec![persistence_id.clone()],
+            FilterCriteria::ExcludeEntityIds {
+                entity_ids: vec![entity_id.clone()],
             },
-            FilterCriteria::IncludePersistenceIds {
-                persistence_id_offsets: vec![PersistenceIdIdOffset {
-                    persistence_id: persistence_id.clone(),
+            FilterCriteria::IncludeEntityIds {
+                entity_id_offsets: vec![EntityIdOffset {
+                    entity_id: entity_id.clone(),
                     seq_nr: 0,
                 }],
             },
@@ -454,14 +450,14 @@ mod tests {
         filter.update(criteria);
         assert!(filter.matches(&envelope));
 
-        let criteria = vec![FilterCriteria::RemoveIncludePersistenceIds {
-            persistence_ids: vec![persistence_id.clone()],
+        let criteria = vec![FilterCriteria::RemoveIncludeEntityIds {
+            entity_ids: vec![entity_id.clone()],
         }];
         filter.update(criteria);
         assert!(!filter.matches(&envelope));
 
-        let criteria = vec![FilterCriteria::RemoveExcludePersistenceIds {
-            persistence_ids: vec![persistence_id.clone()],
+        let criteria = vec![FilterCriteria::RemoveExcludeEntityIds {
+            entity_ids: vec![entity_id.clone()],
         }];
         filter.update(criteria);
         assert!(filter.matches(&envelope));
