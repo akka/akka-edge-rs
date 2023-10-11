@@ -161,7 +161,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     info!("IoT service ready");
 
-    tokio::spawn(temperature::task(
+    let _ = tokio::spawn(temperature::task(
         cl,
         ss,
         temperature_events_key_secret_path,

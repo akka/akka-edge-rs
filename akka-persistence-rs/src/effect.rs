@@ -14,6 +14,7 @@ use crate::{
 };
 
 /// Errors that can occur when applying effects.
+#[derive(Debug)]
 pub enum Error {
     IoError(io::Error),
 }

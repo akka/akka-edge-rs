@@ -5,7 +5,7 @@ use std::{collections::VecDeque, path::Path, pin::Pin, time::Duration};
 use akka_persistence_rs::{Offset, WithOffset};
 use akka_projection_rs::{Handler, HandlerError, Handlers, PendingHandler, SourceProvider};
 use futures::{self, future, stream, Future, Stream};
-use log::error;
+use log::{debug, error};
 use serde::{Deserialize, Serialize};
 use streambed::secret_store::SecretStore;
 use tokio::{sync::oneshot, time};
@@ -143,6 +143,7 @@ pub async fn run<A, B, E, IH, SP>(
             }
 
                 _ = &mut kill_switch => {
+                    debug!("storage killed.");
                     break 'outer;
                 }
 

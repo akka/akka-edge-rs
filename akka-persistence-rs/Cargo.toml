@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 async-trait = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
+log = { workspace = true }
 lru = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 smol_str = { workspace = true, features = ["serde"] }

@@ -8,6 +8,8 @@
 use async_trait::async_trait;
 use chrono::DateTime;
 use chrono::Utc;
+use log::debug;
+use log::warn;
 use lru::LruCache;
 use std::io;
 use std::num::NonZeroUsize;
@@ -97,7 +99,8 @@ pub async fn run<A, B>(
     mut adapter: A,
     mut receiver: Receiver<Message<B::Command>>,
     capacity: NonZeroUsize,
-) where
+) -> io::Result<()>
+where
     B: EventSourcedBehavior + Send + Sync + 'static,
     B::Command: Send,
     B::State: Send + Sync,
@@ -107,7 +110,9 @@ pub async fn run<A, B>(
 
     let mut entities = LruCache::new(capacity);
 
-    if let Ok(envelopes) = adapter.source_initial().await {
+    let envelopes = adapter.source_initial().await?;
+
+    {
         tokio::pin!(envelopes);
         while let Some(envelope) = envelopes.next().await {
             update_entity::<B>(&mut entities, envelope);
@@ -118,9 +123,6 @@ pub async fn run<A, B>(
                 .on_recovery_completed(&context, &entity_status.state)
                 .await;
         }
-    } else {
-        // A problem sourcing initial events is regarded as fatal.
-        return;
     }
 
     // Receive commands for the entities and process them.
@@ -131,26 +133,24 @@ pub async fn run<A, B>(
         let mut entity_status = entities.get(&message.entity_id);
 
         if entity_status.is_none() {
-            if let Ok(envelopes) = adapter.source(&message.entity_id).await {
-                tokio::pin!(envelopes);
-                while let Some(envelope) = envelopes.next().await {
-                    update_entity::<B>(&mut entities, envelope);
-                }
-                entity_status = entities.get(&message.entity_id);
-                let context = Context {
-                    entity_id: &message.entity_id,
-                };
-                behavior
-                    .on_recovery_completed(
-                        &context,
-                        &entity_status
-                            .unwrap_or(&EntityStatus::<B::State>::default())
-                            .state,
-                    )
-                    .await;
-            } else {
-                continue;
+            let envelopes = adapter.source(&message.entity_id).await?;
+
+            tokio::pin!(envelopes);
+            while let Some(envelope) = envelopes.next().await {
+                update_entity::<B>(&mut entities, envelope);
             }
+            entity_status = entities.get(&message.entity_id);
+            let context = Context {
+                entity_id: &message.entity_id,
+            };
+            behavior
+                .on_recovery_completed(
+                    &context,
+                    &entity_status
+                        .unwrap_or(&EntityStatus::<B::State>::default())
+                        .state,
+                )
+                .await;
         }
 
         // Given an entity, send it the command, possibly producing an effect.
@@ -181,9 +181,15 @@ pub async fn run<A, B>(
             )
             .await;
         if result.is_err() {
+            warn!(
+                "An error occurred when processing an effect for {}. Result: {result:?} Evicting it.",
+                context.entity_id
+            );
             entities.pop(context.entity_id);
         }
     }
+
+    Ok(())
 }
 
 fn update_entity<B>(
@@ -203,6 +209,8 @@ where
             entity_state.last_seq_nr = envelope.seq_nr;
             entity_state
         } else {
+            debug!("Inserting new entity: {}", envelope.entity_id);
+
             // We're avoiding the use of get_or_insert so that we can avoid
             // cloning the entity id unless necessary.
             entities.push(
@@ -216,6 +224,8 @@ where
         };
         B::on_event(&context, &mut entity_state.state, envelope.event);
     } else {
+        debug!("Removing entity: {}", envelope.entity_id);
+
         entities.pop(&envelope.entity_id);
     }
     envelope.seq_nr

@@ -61,7 +61,6 @@ impl<E> WithTimestampOffset for EventEnvelope<E> {
     fn timestamp_offset(&self) -> TimestampOffset {
         TimestampOffset {
             timestamp: self.timestamp,
-            // FIXME: Is this correct?
             seen: vec![],
         }
     }
@@ -651,12 +650,13 @@ mod tests {
 
         let (_, my_command_receiver) = mpsc::channel(10);
 
-        entity_manager::run(
+        assert!(entity_manager::run(
             my_behavior,
             file_log_topic_adapter,
             my_command_receiver,
             NonZeroUsize::new(1).unwrap(),
         )
-        .await;
+        .await
+        .is_ok());
     }
 }
