@@ -1,6 +1,6 @@
 //! An offset store for use with the Streambed commit log.
 
-use std::num::NonZeroUsize;
+use std::{io, num::NonZeroUsize};
 
 use akka_persistence_rs::{entity_manager, EntityId, EntityType, Message, PersistenceId};
 use akka_persistence_rs_commitlog::{CommitLogMarshaler, CommitLogTopicAdapter, EventEnvelope};
@@ -90,7 +90,7 @@ pub async fn run(
     offset_store_id: OffsetStoreId,
     offset_store_receiver: mpsc::Receiver<Message<offset_store::Command>>,
     to_compaction_key: impl Fn(&EntityId, &offset_store::Event) -> Option<Key> + Send + Sync + 'static,
-) {
+) -> io::Result<()> {
     let events_entity_type = EntityType::from(offset_store_id.clone());
     let events_topic = Topic::from(offset_store_id.clone());
 

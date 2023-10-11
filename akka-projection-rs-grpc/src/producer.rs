@@ -186,6 +186,7 @@ pub async fn run<E, EC, ECR>(
 
     'outer: loop {
         if let Err(oneshot::error::TryRecvError::Closed) = kill_switch.try_recv() {
+            debug!("gRPC producer killed.");
             break;
         }
 
@@ -287,7 +288,10 @@ pub async fn run<E, EC, ECR>(
                             }
                         },
 
-                        _ = &mut kill_switch => break 'outer,
+                        _ = &mut kill_switch => {
+                            debug!("gRPC producer killed.");
+                            break 'outer
+                        }
                     }
                 }
 
@@ -342,7 +346,10 @@ pub async fn run<E, EC, ECR>(
                             }
                         },
 
-                        _ = &mut kill_switch => break 'outer,
+                        _ = &mut kill_switch => {
+                            debug!("gRPC producer killed.");
+                            break 'outer
+                        }
 
                         else => break
                     }

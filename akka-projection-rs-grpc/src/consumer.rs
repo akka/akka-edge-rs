@@ -13,6 +13,7 @@ use chrono::NaiveDateTime;
 use chrono::TimeZone;
 use chrono::Timelike;
 use chrono::Utc;
+use log::warn;
 use prost::Message;
 use prost_types::Timestamp;
 use std::{future::Future, marker::PhantomData, ops::Range, pin::Pin};
@@ -196,7 +197,10 @@ where
                         if let Ok(proto::StreamOut{ message: Some(proto::stream_out::Message::Event(streamed_event)) }) = stream_out {
                             // If we can't parse the persistence id then we abort.
 
-                            let Ok(persistence_id) = streamed_event.persistence_id.parse::<PersistenceId>() else { break };
+                            let Ok(persistence_id) = streamed_event.persistence_id.parse::<PersistenceId>() else {
+                                warn!("Cannot parse persistence id: {}. Aborting stream.", streamed_event.persistence_id);
+                                break
+                            };
 
                             // Process the sequence number. If it isn't what we expect then we go round again.
 
@@ -211,17 +215,20 @@ where
                                 .await
                                 .is_err()
                             {
+                                warn!("Cannot send to the offset store: {}. Aborting stream.", streamed_event.persistence_id);
                                 break;
                             }
 
                             let next_seq_nr = if let Ok(offset_store::State { last_seq_nr }) = reply_to_receiver.await {
                                 last_seq_nr.wrapping_add(1)
                             } else {
+                                warn!("Cannot receive from the offset store: {}. Aborting stream.", streamed_event.persistence_id);
                                 break
                             };
 
                             if seq_nr > next_seq_nr && streamed_event.source == "BT" {
                                 // This shouldn't happen, if so then abort.
+                                warn!("Back track received for a future event: {}. Aborting stream.", streamed_event.persistence_id);
                                 break;
                             } else if seq_nr != next_seq_nr {
                                 // Duplicate or gap
@@ -231,7 +238,7 @@ where
                             // If the sequence number is what we expect and the producer is backtracking, then
                             // request its payload. If we can't get its payload then we abort as it is an error.
 
-                            let streamed_event = if streamed_event.source == "BT" {
+                            let resolved_streamed_event = if streamed_event.source == "BT" {
                                 if let Ok(response) = stream_connection
                                     .load_event(proto::LoadEventRequest {
                                         stream_id: stream_stream_id.clone(),
@@ -245,21 +252,24 @@ where
                                     {
                                         Some(event)
                                     } else {
+                                        warn!("Cannot receive an backtrack event: {}. Aborting stream.", streamed_event.persistence_id);
                                         None
                                     }
                                 } else {
+                                    warn!("Cannot obtain an backtrack event: {}. Aborting stream.", streamed_event.persistence_id);
                                     None
                                 }
                             } else {
                                 Some(streamed_event)
                             };
 
-                            let Some(streamed_event) = streamed_event else { break; };
+                            let Some(streamed_event) = resolved_streamed_event else { break; };
 
                             // Parse the event and abort if we can't.
 
                             let event = if let Some(payload) = streamed_event.payload {
                                 if !payload.type_url.starts_with("type.googleapis.com/") {
+                                    warn!("Payload type was not expected: {}: {}. Aborting stream.", streamed_event.persistence_id, payload.type_url);
                                     break
                                 }
                                 let Ok(event) = E::decode(Bytes::from(payload.value)) else { break };
@@ -268,9 +278,18 @@ where
                                 None
                             };
 
-                            let Some(offset) = streamed_event.offset else { break };
-                            let Some(timestamp) = offset.timestamp else { break };
-                            let Some(timestamp) = NaiveDateTime::from_timestamp_opt(timestamp.seconds, timestamp.nanos as u32) else { break };
+                            let Some(offset) = streamed_event.offset else {
+                                warn!("Payload offset was not present: {}. Aborting stream.", streamed_event.persistence_id);
+                                break;
+                            };
+                            let Some(timestamp) = offset.timestamp else {
+                                warn!("Payload timestamp was not present: {}. Aborting stream.", streamed_event.persistence_id);
+                                break;
+                            };
+                            let Some(timestamp) = NaiveDateTime::from_timestamp_opt(timestamp.seconds, timestamp.nanos as u32) else {
+                                warn!("Payload timestamp was not able to be converted: {}: {}. Aborting stream.", streamed_event.persistence_id, timestamp);
+                                break;
+                            };
                             let timestamp = Utc.from_utc_datetime(&timestamp);
                             let seen = offset.seen.iter().flat_map(|pis| pis.persistence_id.parse().ok().map(|pid|(pid, pis.seq_nr as u64))).collect();
                             let offset = TimestampOffset { timestamp, seen };

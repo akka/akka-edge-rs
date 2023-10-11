@@ -214,7 +214,7 @@ pub async fn task(
     events_key_secret_path: String,
     command_receiver: mpsc::Receiver<Message<Command>>,
     events: broadcast::Sender<BroadcastEvent>,
-) {
+) -> io::Result<()> {
     // We register a compaction strategy for our topic such that when we use up
     // 64KB of disk space (the default), we will run compaction so that unwanted
     // events are removed. In our scenario, unwanted events can be removed when
