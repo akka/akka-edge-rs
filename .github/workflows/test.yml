@@ -13,21 +13,31 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
-
+    runs-on: ubuntu-22.04
     env:
       RUSTFLAGS: -Dwarnings
 
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout
+      # https://github.com/actions/checkout/releases
+      # v4.1.0
+      uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608
+
     - name: Update Rust
       run: |
         rustup update
+
     - name: Install protoc
-      uses: taiki-e/install-action@v2
+      # https://github.com/taiki-e/install-action/releases
+      # v2.20.3
+      uses: taiki-e/install-action@47d27149ff6b3422864ec504071d5cc7873d642e
       with:
         tool: protoc@${{ env.PROTOC_VERSION }}
-    - uses: Swatinem/rust-cache@v2
+
+    - name: Cache Rust
+      # https://github.com/Swatinem/rust-cache/releases
+      # v2.7.0
+      uses: Swatinem/rust-cache@a95ba195448af2da9b00fb742d14ffaaf3c21f43
 
     - name: test
       run: |
