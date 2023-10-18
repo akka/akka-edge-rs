@@ -8,9 +8,6 @@ members = [
     "akka-projection-rs-commitlog",
     "akka-projection-rs-grpc",
     "akka-projection-rs-storage",
-    "examples/iot-service/backend",
-    "examples/iot-service/model",
-    "examples/iot-service/frontend",
 ]
 
 [workspace.package]
