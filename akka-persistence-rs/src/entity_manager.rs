@@ -1,4 +1,4 @@
-//! The [EntityManager] handles the lifecycle and routing of messages for
+//! An entity manager task handles the lifecycle and routing of messages for
 //! an entity type. One EntityManager per entity type.
 //! The EntityManager will generally instantiate the entities on demand, i.e. when first
 //! message is sent to a specific entity. It will passivate least used

@@ -3,8 +3,13 @@ name = "akka-projection-rs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Akka event projections"
 
 [dependencies]
+akka-persistence-rs = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 mqtt-protocol = { workspace = true }
@@ -13,5 +18,3 @@ serde = { workspace = true }
 smol_str = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
-
-akka-persistence-rs = { path = "../akka-persistence-rs" }

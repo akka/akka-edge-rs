@@ -1,4 +1,4 @@
-akka-projection-rs-storage
+Akka projections with streambed offset storage
 ===
 
 Uses [streambed-storage](https://github.com/streambed/streambed-rs/streambed-storage) to persist projection offsets.

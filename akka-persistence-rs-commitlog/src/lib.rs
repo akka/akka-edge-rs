@@ -226,7 +226,7 @@ where
 /// As CommitLog is intended for use at the edge, we assume
 /// that all entities will be event sourced into memory.
 ///
-/// Developers are required to provide implementations of [CommitLogEventEnvelopeMarshaler]
+/// Developers are required to provide implementations of [SourceProvider]
 /// for bytes and events i.e. deserialization/decryption and
 /// serialization/encryption respectively, along with CommitLog's
 /// use of keys for compaction including the storage of entities.

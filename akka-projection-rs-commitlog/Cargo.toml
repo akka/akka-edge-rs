@@ -3,8 +3,15 @@ name = "akka-projection-rs-commitlog"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Akka projections with streambed for persistence"
 
 [dependencies]
+akka-persistence-rs = { workspace = true }
+akka-persistence-rs-commitlog = { workspace = true }
+akka-projection-rs = { workspace = true }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
@@ -14,10 +21,6 @@ streambed = { workspace = true }
 streambed-logged = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
-
-akka-persistence-rs = { path = "../akka-persistence-rs" }
-akka-persistence-rs-commitlog = { path = "../akka-persistence-rs-commitlog" }
-akka-projection-rs = { path = "../akka-projection-rs" }
 
 [dev-dependencies]
 env_logger = { workspace = true }
