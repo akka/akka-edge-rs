@@ -14,9 +14,12 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0" # WHEN UPDATING THIS VERSION, UPDATE THE `akka-persistence-rs` VERSIONS BELOW
 edition = "2021"
 rust-version = "1.70.0"
+license-file = "LICENSE"
+repository = "https://github.com/lightbend/akka-edge-rs.git"
+homepage = "https://doc.akka.io/docs/akka-edge/current/guide.html"
 
 [workspace.dependencies]
 async-stream = "0.3.3"
@@ -48,10 +51,10 @@ scopeguard = "1.1"
 serde = "1.0.151"
 serde_json = "1.0.107"
 smol_str = "0.2.0"
-streambed = { git = "https://github.com/streambed/streambed-rs.git", rev = "101908794bbe4448578a14b474d6a948387c963a" }
-streambed-confidant = { git = "https://github.com/streambed/streambed-rs.git", rev = "101908794bbe4448578a14b474d6a948387c963a" }
-streambed-logged = { git = "https://github.com/streambed/streambed-rs.git", rev = "101908794bbe4448578a14b474d6a948387c963a" }
-streambed-storage = { git = "https://github.com/streambed/streambed-rs.git", rev = "101908794bbe4448578a14b474d6a948387c963a" }
+streambed = { version = "0.9.1" }
+streambed-confidant = { version = "0.9.1" }
+streambed-logged = { version = "0.9.1" }
+streambed-storage = { version = "0.9.1" }
 test-log = "0.2.11"
 tokio = "1.23.0"
 tokio-stream = "0.1.14"
@@ -62,6 +65,12 @@ warp = "0.3"
 wasm-logger = "0.2"
 web-sys = "0.3"
 yew = { version = "0.20" }
+
+# THE VERSIONS HERE SHOULD BE THE SAME AS PER `workspace.package.version`.
+
+akka-persistence-rs = { path = "akka-persistence-rs", version = "0.1.0" }
+akka-persistence-rs-commitlog = { path = "akka-persistence-rs-commitlog", version = "0.1.0" }
+akka-projection-rs = { path = "akka-projection-rs", version = "0.1.0" }
 
 [profile.bench-debug]
 inherits = "release"

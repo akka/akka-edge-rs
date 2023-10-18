@@ -3,8 +3,14 @@ name = "akka-projection-rs-storage"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Akka projections with streambed offset storage"
 
 [dependencies]
+akka-persistence-rs = { workspace = true }
+akka-projection-rs = { workspace = true }
 async-trait = { workspace = true }
 ciborium = { workspace = true }
 log = { workspace = true }
@@ -16,17 +22,13 @@ streambed-storage = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 
-akka-persistence-rs = { path = "../akka-persistence-rs" }
-akka-projection-rs = { path = "../akka-projection-rs" }
-
 [dev-dependencies]
+akka-persistence-rs-commitlog = { workspace = true }
 async-stream = { workspace = true }
 chrono = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 env_logger = { workspace = true }
 test-log = { workspace = true }
-
-akka-persistence-rs-commitlog = { path = "../akka-persistence-rs-commitlog" }
 
 [[bench]]
 name = "benches"

@@ -3,8 +3,14 @@ name = "akka-projection-rs-grpc"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Akka projections with gRPC communication"
 
 [dependencies]
+akka-persistence-rs = { workspace = true }
+akka-projection-rs = { workspace = true }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
@@ -19,9 +25,6 @@ smol_str = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
-
-akka-persistence-rs = { path = "../akka-persistence-rs" }
-akka-projection-rs = { path = "../akka-projection-rs" }
 
 [dev-dependencies]
 env_logger = { workspace = true }
