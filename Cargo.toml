@@ -48,10 +48,10 @@ scopeguard = "1.1"
 serde = "1.0.151"
 serde_json = "1.0.107"
 smol_str = "0.2.0"
-streambed = { git = "https://github.com/streambed/streambed-rs.git", rev = "101908794bbe4448578a14b474d6a948387c963a" }
-streambed-confidant = { git = "https://github.com/streambed/streambed-rs.git", rev = "101908794bbe4448578a14b474d6a948387c963a" }
-streambed-logged = { git = "https://github.com/streambed/streambed-rs.git", rev = "101908794bbe4448578a14b474d6a948387c963a" }
-streambed-storage = { git = "https://github.com/streambed/streambed-rs.git", rev = "101908794bbe4448578a14b474d6a948387c963a" }
+streambed = { version = "0.9.1" }
+streambed-confidant = { version = "0.9.1" }
+streambed-logged = { version = "0.9.1" }
+streambed-storage = { version = "0.9.1" }
 test-log = "0.2.11"
 tokio = "1.23.0"
 tokio-stream = "0.1.14"
