@@ -65,9 +65,9 @@ yew = { version = "0.20" }
 
 # THE VERSIONS HERE SHOULD BE THE SAME AS PER `workspace.package.version`.
 
-akka-persistence-rs = { path = "akka-persistence-rs", version = "0.1.0" }
-akka-persistence-rs-commitlog = { path = "akka-persistence-rs-commitlog", version = "0.1.0" }
-akka-projection-rs = { path = "akka-projection-rs", version = "0.1.0" }
+akka-persistence-rs = { path = "akka-persistence-rs", version = "0.1.0", registry = "lightbend-akka-rs" }
+akka-persistence-rs-commitlog = { path = "akka-persistence-rs-commitlog", version = "0.1.0", registry = "lightbend-akka-rs" }
+akka-projection-rs = { path = "akka-projection-rs", version = "0.1.0", registry = "lightbend-akka-rs" }
 
 [profile.bench-debug]
 inherits = "release"

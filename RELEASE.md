@@ -14,3 +14,19 @@ cargo publish -p akka-projection-rs-commitlog
 cargo publish -p akka-projection-rs-grpc
 cargo publish -p akka-projection-rs-storage
 ```
+
+### Publish to Cloudsmith
+Ensure the following env vars are available:
+```
+export CARGO_REGISTRIES_AKKA_RS_INDEX=https://dl.cloudsmith.io/{entitlement-token}/lightbend/akka-rs/cargo/index.git
+export CARGO_REGISTRIES_AKKA_RS_TOKEN={api-key}
+```
+
+Credentials bound to the `cloudsmith-machine` user should be used:
+- `{entitlement-token` can be found [here](https://cloudsmith.io/~lightbend/repos/akka-rs/entitlements/)
+- `{api-key}` can be found [here](https://cloudsmith.io/user/settings/api/)
+
+Also make sure to specify the registry `--registry` accordingly, for example:
+```
+cargo publish -p akka-persistence-rs-commitlog --registry AKKA_RS
+```
