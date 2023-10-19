@@ -494,7 +494,5 @@ mod tests {
         assert!(!consumer_filters_receiver.borrow().is_empty());
 
         assert!(reply_receiver.await.is_ok());
-
-        server_kill_switch.notified();
     }
 }
