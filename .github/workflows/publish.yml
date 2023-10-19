@@ -9,7 +9,6 @@ permissions:
 jobs:
   publish:
     if: github.event.repository.fork == false
-    if: startsWith(github.event.ref, 'refs/tags/v')
     name: Publish
     runs-on: ubuntu-22.04
     env:
@@ -23,6 +22,7 @@ jobs:
 
     steps:
     - name: Checkout
+      if: startsWith(github.event.ref, 'refs/tags/v')
       # https://github.com/actions/checkout/releases
       # v4.1.0
       uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608
