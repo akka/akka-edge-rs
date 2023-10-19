@@ -53,7 +53,7 @@ jobs:
           rsync -r . akkarepo@gustav.akka.io:www/api/akka-edge-rs/${TAG}/
 
       - name: Publish API documentation (snapshot)
-        if: ! startsWith(github.event.ref, 'refs/tags/')
+        if: ${{ ! startsWith(github.event.ref, 'refs/tags/') }}
         run: |+
           cd target/doc
           rsync -r . akkarepo@gustav.akka.io:www/api/akka-edge-rs/snapshot/
