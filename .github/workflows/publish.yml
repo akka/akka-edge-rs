@@ -8,6 +8,8 @@ permissions:
 
 jobs:
   publish:
+    if: github.event.repository.fork == false
+    if: startsWith(github.event.ref, 'refs/tags/v')
     name: Publish
     runs-on: ubuntu-22.04
     env:
@@ -16,8 +18,7 @@ jobs:
 
     strategy:
       fail-fast: false
-      matrix: # align with publish-test-reports.yml
-        SCALA_VERSION: [2.13, 3.3]
+      matrix:
         PACKAGE: ["akka-persistence-rs", "akka-persistence-rs-commitlog", "akka-projection-rs", "akka-projection-rs-commitlog", "akka-projection-rs-grpc", "akka-projection-rs-storage"]
 
     steps:
