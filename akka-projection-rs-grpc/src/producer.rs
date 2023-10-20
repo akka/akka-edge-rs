@@ -190,20 +190,21 @@ pub async fn run<E, EC, ECR>(
             break;
         }
 
+        if let Some(d) = &mut delayer {
+            d.delay().await;
+        } else {
+            let mut d = Delayer::default();
+            d.delay().await;
+            delayer = Some(d);
+        }
+
         let mut connection = if let Ok(connection) = (event_consumer_channel)()
             .await
             .map(proto::event_consumer_service_client::EventConsumerServiceClient::new)
         {
-            delayer = None;
+            delayer = Some(Delayer::default());
             Some(connection)
         } else {
-            if let Some(d) = &mut delayer {
-                d.delay().await;
-            } else {
-                let mut d = Delayer::default();
-                d.delay().await;
-                delayer = Some(d);
-            }
             None
         };
 
