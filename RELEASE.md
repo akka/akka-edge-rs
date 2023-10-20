@@ -5,6 +5,7 @@ Releasing
 2. Change the `dependency.akka-*` versions to be the same version number as per step 1.
 3. Commit the changes and tag with the version using `v` as a prefix e.g. 1.0.0 would be "v1.0.0".
 4. Perform the commands below, and in the same order...
+5. To publish from CI, tag the release as per step 1 and [run the job manually](https://github.com/lightbend/akka-edge-rs/actions/workflows/publish.yml).
 
 ```
 cargo publish -p akka-persistence-rs
