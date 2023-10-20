@@ -6,10 +6,14 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  PROTOC_VERSION: 3.23.4
+
 jobs:
   publish:
     if: github.event.repository.fork == false
-    name: Publish
+    name: Publish release
     runs-on: ubuntu-22.04
     env:
       CARGO_REGISTRIES_AKKA_RS_INDEX: https://dl.cloudsmith.io/${{ secrets.CLOUDSMITH_AKKA_RS_ENTITLEMENT_TOKEN }}/lightbend/akka-rs/cargo/index.git
