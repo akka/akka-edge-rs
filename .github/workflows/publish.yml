@@ -1,7 +1,10 @@
 name: Publish
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags: ["*"]
 
 permissions:
   contents: read
@@ -49,3 +52,58 @@ jobs:
     - name: Publish ${{ matrix.PACKAGE }}
       if: startsWith(github.event.ref, 'refs/tags/v')
       run: cargo publish --registry AKKA_RS -p ${{ matrix.PACKAGE }}
+
+  documentation:
+    if: github.event.repository.fork == false
+    name: Documentation
+    # the release environment provides access to secrets required in the release process
+    # https://github.com/akka/akka-edge-rs/settings/environments
+    environment: release
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        # https://github.com/actions/checkout/releases
+        # v4.1.0
+        uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608
+
+      - name: Update Rust
+        run: |
+          rustup update
+
+      - name: Install protoc
+        # https://github.com/taiki-e/install-action/releases
+        # v2.20.3
+        uses: taiki-e/install-action@47d27149ff6b3422864ec504071d5cc7873d642e
+        with:
+          tool: protoc@${{ env.PROTOC_VERSION }}
+
+      - name: Cache Rust
+        # https://github.com/Swatinem/rust-cache/releases
+        # v2.7.0
+        uses: Swatinem/rust-cache@a95ba195448af2da9b00fb742d14ffaaf3c21f43
+
+      - name: Create API documentation
+        run: cargo doc --no-deps
+
+      - name: Key setup
+        env:
+          GUSTAV_KEY: ${{ secrets.GUSTAV_KEY }}
+        run: |+
+          eval "$(ssh-agent -s)"
+          echo $GUSTAV_KEY | base64 -di > .github/id_ed2551
+          chmod 600 .github/id_ed2551
+          ssh-add .github/id_ed2551
+
+      - name: Publish API documentation (tag)
+        if: startsWith(github.event.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.event.ref }}
+        run: |+
+          cd target/doc
+          rsync -r . akkarepo@gustav.akka.io:www/api/akka-edge-rs/${TAG}/
+
+      - name: Publish API documentation (snapshot)
+        if: ${{ ! startsWith(github.event.ref, 'refs/tags/') }}
+        run: |+
+          cd target/doc
+          rsync -r . akkarepo@gustav.akka.io:www/api/akka-edge-rs/snapshot/
