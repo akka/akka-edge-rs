@@ -149,7 +149,7 @@ impl<E> GrpcEventFlow<E> {
         self.grpc_producer
             .send((
                 EventEnvelope {
-                    persistence_id: persistence_id.clone(),
+                    persistence_id,
                     seq_nr: transformation.seq_nr,
                     event: transformation.event,
                     offset: transformation.offset,
