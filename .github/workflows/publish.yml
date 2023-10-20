@@ -22,7 +22,6 @@ jobs:
 
     steps:
     - name: Checkout
-      if: startsWith(github.event.ref, 'refs/tags/v')
       # https://github.com/actions/checkout/releases
       # v4.1.0
       uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608
@@ -44,4 +43,5 @@ jobs:
       uses: Swatinem/rust-cache@a95ba195448af2da9b00fb742d14ffaaf3c21f43
 
     - name: Publish ${{ matrix.PACKAGE }}
+      if: startsWith(github.event.ref, 'refs/tags/v')
       run: cargo publish --registry AKKA_RS -p ${{ matrix.PACKAGE }}
