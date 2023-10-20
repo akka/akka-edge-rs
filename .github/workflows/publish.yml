@@ -1,0 +1,47 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.event.repository.fork == false
+    name: Publish
+    runs-on: ubuntu-22.04
+    env:
+      CARGO_REGISTRIES_AKKA_RS_INDEX: https://dl.cloudsmith.io/${{ secrets.CLOUDSMITH_AKKA_RS_ENTITLEMENT_TOKEN }}/lightbend/akka-rs/cargo/index.git
+      CARGO_REGISTRIES_AKKA_RS_TOKEN: ${{ secrets.CLOUDSMITH_LIGHTBEND_MACHINE_API_KEY }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        PACKAGE: ["akka-persistence-rs", "akka-persistence-rs-commitlog", "akka-projection-rs", "akka-projection-rs-commitlog", "akka-projection-rs-grpc", "akka-projection-rs-storage"]
+
+    steps:
+    - name: Checkout
+      # https://github.com/actions/checkout/releases
+      # v4.1.0
+      uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608
+
+    - name: Update Rust
+      run: |
+        rustup update
+
+    - name: Install protoc
+      # https://github.com/taiki-e/install-action/releases
+      # v2.20.3
+      uses: taiki-e/install-action@47d27149ff6b3422864ec504071d5cc7873d642e
+      with:
+        tool: protoc@${{ env.PROTOC_VERSION }}
+
+    - name: Cache Rust
+      # https://github.com/Swatinem/rust-cache/releases
+      # v2.7.0
+      uses: Swatinem/rust-cache@a95ba195448af2da9b00fb742d14ffaaf3c21f43
+
+    - name: Publish ${{ matrix.PACKAGE }}
+      if: startsWith(github.event.ref, 'refs/tags/v')
+      run: cargo publish --registry AKKA_RS -p ${{ matrix.PACKAGE }}
