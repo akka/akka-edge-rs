@@ -102,20 +102,21 @@ where
         F: Fn() -> FR + Send + Sync,
         FR: Future<Output = Option<Offset>> + Send,
     {
+        if let Some(delayer) = &mut self.delayer {
+            delayer.delay().await;
+        } else {
+            let mut delayer = Delayer::default();
+            delayer.delay().await;
+            self.delayer = Some(delayer);
+        }
+
         let connection = if let Ok(connection) = (self.event_producer_channel)()
             .await
             .map(proto::event_producer_service_client::EventProducerServiceClient::new)
         {
-            self.delayer = None;
+            self.delayer = Some(Delayer::default());
             Some(connection)
         } else {
-            if let Some(delayer) = &mut self.delayer {
-                delayer.delay().await;
-            } else {
-                let mut delayer = Delayer::default();
-                delayer.delay().await;
-                self.delayer = Some(delayer);
-            }
             None
         };
 

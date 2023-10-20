@@ -10,7 +10,7 @@ use std::time::Duration;
 use exponential_backoff::Backoff;
 use tokio::time;
 
-const MIN_DELAY: Duration = Duration::from_millis(100);
+const MIN_DELAY: Duration = Duration::from_millis(500);
 const MAX_DELAY: Duration = Duration::from_secs(10);
 
 pub struct Delayer {
