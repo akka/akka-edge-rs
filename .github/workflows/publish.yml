@@ -22,11 +22,6 @@ jobs:
       CARGO_REGISTRIES_AKKA_RS_INDEX: https://dl.cloudsmith.io/${{ secrets.CLOUDSMITH_AKKA_RS_ENTITLEMENT_TOKEN }}/lightbend/akka-rs/cargo/index.git
       CARGO_REGISTRIES_AKKA_RS_TOKEN: ${{ secrets.CLOUDSMITH_LIGHTBEND_MACHINE_API_KEY }}
 
-    strategy:
-      fail-fast: false
-      matrix:
-        PACKAGE: ["akka-persistence-rs", "akka-persistence-rs-commitlog", "akka-projection-rs", "akka-projection-rs-commitlog", "akka-projection-rs-grpc", "akka-projection-rs-storage"]
-
     steps:
     - name: Checkout
       # https://github.com/actions/checkout/releases
@@ -49,9 +44,29 @@ jobs:
       # v2.7.0
       uses: Swatinem/rust-cache@a95ba195448af2da9b00fb742d14ffaaf3c21f43
 
-    - name: Publish ${{ matrix.PACKAGE }}
+    - name: Publish akka-persistence-rs
       if: startsWith(github.event.ref, 'refs/tags/v')
-      run: cargo publish --registry AKKA_RS -p ${{ matrix.PACKAGE }}
+      run: cargo publish --registry AKKA_RS -p akka-persistence-rs
+
+    - name: Publish akka-persistence-rs-commitlog
+      if: startsWith(github.event.ref, 'refs/tags/v')
+      run: cargo publish --registry AKKA_RS -p akka-persistence-rs-commitlog
+
+    - name: Publish akka-projection-rs
+      if: startsWith(github.event.ref, 'refs/tags/v')
+      run: cargo publish --registry AKKA_RS -p akka-projection-rs
+
+    - name: Publish akka-projection-rs-commitlog
+      if: startsWith(github.event.ref, 'refs/tags/v')
+      run: cargo publish --registry AKKA_RS -p akka-projection-rs-commitlog
+
+    - name: Publish akka-projection-rs-grpc
+      if: startsWith(github.event.ref, 'refs/tags/v')
+      run: cargo publish --registry AKKA_RS -p akka-projection-rs-grpc
+
+    - name: Publish akka-projection-rs-storage
+      if: startsWith(github.event.ref, 'refs/tags/v')
+      run: cargo publish --registry AKKA_RS -p akka-projection-rs-storage
 
   documentation:
     if: github.event.repository.fork == false
