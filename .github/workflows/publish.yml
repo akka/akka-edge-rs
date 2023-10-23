@@ -115,10 +115,10 @@ jobs:
           TAG: ${{ github.event.ref }}
         run: |+
           cd target/doc
-          rsync -r . akkarepo@gustav.akka.io:www/api/akka-edge-rs/${TAG}/
+          rsync -e "ssh -o StrictHostKeyChecking=no" -r . akkarepo@gustav.akka.io:www/api/akka-edge-rs/${TAG}/
 
       - name: Publish API documentation (snapshot)
         if: ${{ ! startsWith(github.event.ref, 'refs/tags/') }}
         run: |+
           cd target/doc
-          rsync -r . akkarepo@gustav.akka.io:www/api/akka-edge-rs/snapshot/
+          rsync -e "ssh -o StrictHostKeyChecking=no" -r . akkarepo@gustav.akka.io:www/api/akka-edge-rs/snapshot/
