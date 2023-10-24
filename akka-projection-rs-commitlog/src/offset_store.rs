@@ -61,14 +61,14 @@ where
         entity_id: EntityId,
         _seq_nr: u64,
         timestamp: DateTime<Utc>,
-        event: offset_store::Event,
+        event: &offset_store::Event,
     ) -> Option<ProducerRecord> {
         let offset_store::Event::Saved { seq_nr } = event;
         let headers = vec![Header {
             key: HeaderKey::from("entity-id"),
             value: entity_id.as_bytes().into(),
         }];
-        let key = self.to_compaction_key(&entity_id, &event)?;
+        let key = self.to_compaction_key(&entity_id, event)?;
         Some(ProducerRecord {
             topic,
             headers,
