@@ -98,7 +98,7 @@ where
         entity_id: EntityId,
         seq_nr: u64,
         timestamp: DateTime<Utc>,
-        event: E,
+        event: &E,
     ) -> Option<ProducerRecord>;
 }
 
@@ -177,11 +177,11 @@ where
         entity_id: EntityId,
         seq_nr: u64,
         timestamp: DateTime<Utc>,
-        event: E,
+        event: &E,
     ) -> Option<ProducerRecord> {
         use streambed::commit_log::{Header, HeaderKey};
 
-        let key = self.to_compaction_key(&entity_id, &event)?;
+        let key = self.to_compaction_key(&entity_id, event)?;
         let buf = streambed::encrypt_struct(
             self.secret_store(),
             &self.secret_path(&entity_id),
@@ -379,7 +379,7 @@ impl<CL, E, M> Handler<E> for CommitLogTopicAdapter<CL, E, M>
 where
     CL: CommitLog,
     M: CommitLogMarshaler<E> + Send + Sync,
-    for<'async_trait> E: Clone + DeserializeOwned + Serialize + Send + Sync + 'async_trait,
+    for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
     async fn process(
         &mut self,
@@ -392,7 +392,7 @@ where
                 envelope.entity_id.clone(),
                 envelope.seq_nr,
                 envelope.timestamp,
-                envelope.event.clone(),
+                &envelope.event,
             )
             .await
             .ok_or_else(|| {
@@ -512,7 +512,7 @@ mod tests {
             entity_id: EntityId,
             _seq_nr: u64,
             timestamp: DateTime<Utc>,
-            event: MyEvent,
+            event: &MyEvent,
         ) -> Option<ProducerRecord> {
             let headers = vec![Header {
                 key: HeaderKey::from("entity-id"),

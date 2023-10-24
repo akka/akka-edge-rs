@@ -202,7 +202,7 @@ mod tests {
             entity_id: EntityId,
             _seq_nr: u64,
             timestamp: DateTime<Utc>,
-            event: MyEvent,
+            event: &MyEvent,
         ) -> Option<ProducerRecord> {
             let headers = vec![Header {
                 key: Topic::from("entity-id"),
