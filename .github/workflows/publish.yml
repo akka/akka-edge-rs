@@ -1,6 +1,7 @@
 name: Publish
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -102,12 +103,12 @@ jobs:
 
       - name: Key setup
         env:
-          GUSTAV_KEY: ${{ secrets.GUSTAV_KEY }}
+          AKKA_RSYNC_GUSTAV: ${{ secrets.AKKA_RSYNC_GUSTAV }}
         run: |+
           eval "$(ssh-agent -s)"
-          echo $GUSTAV_KEY | base64 -di > .github/id_ed2551
-          chmod 600 .github/id_ed2551
-          ssh-add .github/id_ed2551
+          echo $AKKA_RSYNC_GUSTAV | base64 -d > .github/id_rsa
+          chmod 600 .github/id_rsa
+          ssh-add .github/id_rsa
 
       - name: Publish API documentation (tag)
         if: startsWith(github.event.ref, 'refs/tags/v')
