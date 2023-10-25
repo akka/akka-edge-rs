@@ -101,25 +101,29 @@ jobs:
       - name: Create API documentation
         run: cargo doc --no-deps
 
-      - name: Key setup
+      - name: Publish API documentation (tag)
+        if: startsWith(github.event.ref, 'refs/tags/v')
         env:
+          TAG: ${{ github.event.ref }}
           AKKA_RSYNC_GUSTAV: ${{ secrets.AKKA_RSYNC_GUSTAV }}
+          RSYNC_RSH: "ssh -o StrictHostKeyChecking=no"
         run: |+
           eval "$(ssh-agent -s)"
           echo $AKKA_RSYNC_GUSTAV | base64 -d > .github/id_rsa
           chmod 600 .github/id_rsa
           ssh-add .github/id_rsa
-
-      - name: Publish API documentation (tag)
-        if: startsWith(github.event.ref, 'refs/tags/v')
-        env:
-          TAG: ${{ github.event.ref }}
-        run: |+
           cd target/doc
-          rsync -e "ssh -o StrictHostKeyChecking=no" -r . akkarepo@gustav.akka.io:www/api/akka-edge-rs/${TAG}/
+          rsync -azP ./ akkarepo@gustav.akka.io:www/api/akka-edge-rs/${TAG}/
 
       - name: Publish API documentation (snapshot)
         if: ${{ ! startsWith(github.event.ref, 'refs/tags/') }}
+        env:
+          AKKA_RSYNC_GUSTAV: ${{ secrets.AKKA_RSYNC_GUSTAV }}
+          RSYNC_RSH: "ssh -o StrictHostKeyChecking=no"
         run: |+
+          eval "$(ssh-agent -s)"
+          echo $AKKA_RSYNC_GUSTAV | base64 -d > .github/id_rsa
+          chmod 600 .github/id_rsa
+          ssh-add .github/id_rsa
           cd target/doc
-          rsync -e "ssh -o StrictHostKeyChecking=no" -r . akkarepo@gustav.akka.io:www/api/akka-edge-rs/snapshot/
+          rsync -azP ./ akkarepo@gustav.akka.io:www/api/akka-edge-rs/snapshot/
