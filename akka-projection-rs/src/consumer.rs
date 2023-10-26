@@ -1,14 +1,18 @@
 #![doc = include_str!("../README.md")]
 
-use std::{collections::VecDeque, path::Path, pin::Pin, time::Duration};
+use std::{collections::VecDeque, pin::Pin};
 
-use akka_persistence_rs::{Offset, WithOffset};
-use akka_projection_rs::{Handler, HandlerError, Handlers, PendingHandler, SourceProvider};
+use crate::{
+    offset_store::{self},
+    Handler, HandlerError, Handlers, PendingHandler, SourceProvider,
+};
+use akka_persistence_rs::{
+    Offset, Source, TimestampOffset, WithOffset, WithPersistenceId, WithSeqNr, WithSource,
+};
 use futures::{self, future, stream, Future, Stream};
-use log::{debug, error};
+use log::{debug, warn};
 use serde::{Deserialize, Serialize};
-use streambed::secret_store::SecretStore;
-use tokio::{sync::oneshot, time};
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt;
 
 #[derive(Default, Deserialize, Serialize)]
@@ -16,27 +20,18 @@ struct StorableState {
     last_offset: Option<Offset>,
 }
 
-/// Provides at-least-once local file system based storage for projection offsets,
+/// Provides at-least-once projections with storage for projection offsets,
 /// meaning, for multiple runs of a projection, it is possible for events to repeat
 /// from previous runs.
-///
-/// The `min_save_offset_interval` declares the minimum time between
-/// having successfully handled an event by the handler to saving
-/// the offset to storage. Therefore, high bursts of events are not
-/// slowed down by having to persist an offset to storage. This strategy
-/// works given the at-least-once semantics.
 pub async fn run<A, B, E, IH, SP>(
-    secret_store: &impl SecretStore,
-    secret_path: &str,
-    state_storage_path: &Path,
+    offset_store: mpsc::Sender<offset_store::Command>,
     mut kill_switch: oneshot::Receiver<()>,
-    mut source_provider: SP,
+    source_provider: SP,
     handler: IH,
-    min_save_offset_interval: Duration,
 ) where
     A: Handler<Envelope = E> + Send,
     B: PendingHandler<Envelope = E> + Send,
-    E: WithOffset + Send,
+    E: WithPersistenceId + WithOffset + WithSeqNr + WithSource + Send,
     IH: Into<Handlers<A, B>>,
     SP: SourceProvider<Envelope = E>,
 {
@@ -48,29 +43,19 @@ pub async fn run<A, B, E, IH, SP>(
     'outer: loop {
         let mut source = source_provider
             .source(|| async {
-                streambed_storage::load_struct(
-                    state_storage_path,
-                    secret_store,
-                    secret_path,
-                    |bytes| ciborium::de::from_reader::<StorableState, _>(bytes),
-                )
-                .await
-                .ok()
-                .and_then(|s| s.last_offset)
+                let (reply_to, reply_to_receiver) = oneshot::channel();
+                offset_store
+                    .send(offset_store::Command::GetLastOffset { reply_to })
+                    .await
+                    .ok()?;
+                reply_to_receiver.await.ok()?
             })
             .await;
 
         let mut always_pending_source: Pin<Box<dyn Stream<Item = E> + Send>> =
             Box::pin(stream::pending());
 
-        let serializer = |state: &StorableState| {
-            let mut buf = Vec::new();
-            ciborium::ser::into_writer(state, &mut buf).map(|_| buf)
-        };
-
         let mut active_source = &mut source;
-        let mut next_save_offset_interval = Duration::MAX;
-        let mut last_offset = None;
 
         let mut handler_futures = VecDeque::with_capacity(B::MAX_PENDING);
 
@@ -78,19 +63,75 @@ pub async fn run<A, B, E, IH, SP>(
             tokio::select! {
                 envelope = active_source.next() => {
                     if let Some(envelope) = envelope {
+                        let persistence_id = envelope.persistence_id().clone();
+
+                        // Process the sequence number. If it isn't what we expect then we go round again.
+
+                        let seq_nr = envelope.seq_nr();
+
+                        let (reply_to, reply_to_receiver) = oneshot::channel();
+                        if offset_store
+                            .send(offset_store::Command::GetOffset { persistence_id: persistence_id.clone(), reply_to })
+                            .await
+                            .is_err()
+                        {
+                            warn!("Cannot send to the offset store: {}. Aborting stream.", persistence_id);
+                            break;
+                        }
+
+                        let next_seq_nr = if let Ok(Some(Offset::Timestamp(TimestampOffset { seq_nr, .. }))) = reply_to_receiver.await {
+                            seq_nr.wrapping_add(1)
+                        } else {
+                            warn!("Cannot receive from the offset store: {}. Aborting stream.", persistence_id);
+                            break
+                        };
+
+                        let source = envelope.source();
+
+                        if seq_nr > next_seq_nr && envelope.source() == Source::Backtrack {
+                            // This shouldn't happen, if so then abort.
+                            warn!("Back track received for a future event: {}. Aborting stream.", persistence_id);
+                            break;
+                        } else if seq_nr != next_seq_nr {
+                            // Duplicate or gap
+                            continue;
+                        }
+
+                        // If the sequence number is what we expect and the producer is backtracking, then
+                        // request its payload. If we can't get its payload then we abort as it is an error.
+
+                        let resolved_envelope = if source == Source::Backtrack {
+                            if let Some(event) = source_provider.load_envelope(persistence_id.clone(), seq_nr)
+                                .await
+                            {
+                                Some(event)
+                            } else {
+                                warn!("Cannot obtain an backtrack envelope: {}. Aborting stream.", persistence_id);
+                                None
+                            }
+                        } else {
+                            Some(envelope)
+                        };
+
+                        let Some(envelope) = resolved_envelope else { break; };
+
+                        // We now have an event correctly sequenced. Process it.
+
                         let offset = envelope.offset();
                         match &mut handler {
                             Handlers::Ready(handler, _) => {
-                                if handler.process(envelope).await.is_ok() {
-                                    next_save_offset_interval = min_save_offset_interval;
-                                    last_offset = Some(offset);
-                                } else {
+                                if handler.process(envelope).await.is_err()
+                                    || offset_store
+                                        .send(offset_store::Command::SaveOffset { persistence_id, offset })
+                                        .await
+                                        .is_err()
+                                {
                                     break;
                                 }
-                            }
+                                                }
                             Handlers::Pending(handler, _) => {
                                 if let Ok(pending) = handler.process_pending(envelope).await {
-                                    handler_futures.push_back((pending, offset));
+                                    handler_futures.push_back((pending, persistence_id, offset));
                                     // If we've reached the limit on the pending futures in-flight
                                     // then back off sourcing more.
                                     if handler_futures.len() == B::MAX_PENDING {
@@ -106,41 +147,23 @@ pub async fn run<A, B, E, IH, SP>(
                     }
                 }
 
-                pending = handler_futures.get_mut(0).map_or_else(|| &mut always_pending_handler, |(f, _)| f) => {
+                pending = handler_futures.get_mut(0).map_or_else(|| &mut always_pending_handler, |(f, _, _)| f) => {
                     // A pending future will never complete so this MUST mean that we have a element in our queue.
-                    let (_, offset) = handler_futures.pop_front().unwrap();
+                    let (_, persistence_id, offset) = handler_futures.pop_front().unwrap();
 
                     // We've freed up a slot on the pending futures in-flight, so allow more events to be received.
                     active_source = &mut source;
 
-                    // All is well with our pending future so we can finally cause the offset to be persisted.
-                    if pending.is_ok() {
-                        next_save_offset_interval = min_save_offset_interval;
-                        last_offset = Some(offset);
-                    } else {
+                    // If all is well with our pending future so we can finally cause the offset to be persisted.
+                    if pending.is_err()
+                        || offset_store
+                            .send(offset_store::Command::SaveOffset { persistence_id, offset })
+                            .await
+                            .is_err()
+                    {
                         break;
                     }
                 }
-
-                _ = time::sleep(next_save_offset_interval) => {
-                    next_save_offset_interval = Duration::MAX;
-                    if last_offset.is_some() {
-                        let storable_state = StorableState {
-                            last_offset
-                        };
-                        if streambed_storage::save_struct(
-                            state_storage_path,
-                            secret_store,
-                            secret_path,
-                            serializer,
-                            rand::thread_rng,
-                            &storable_state
-                        ).await.is_err() {
-                            error!("Cannot persist offsets");
-                        }
-                        last_offset = None;
-                    }
-            }
 
                 _ = &mut kill_switch => {
                     debug!("storage killed.");
@@ -157,23 +180,49 @@ pub async fn run<A, B, E, IH, SP>(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, env, fs, future::Future, pin::Pin};
+    use std::{env, fs, future::Future, pin::Pin};
 
     use super::*;
+    use crate::{offset_store::LastOffset, HandlerError};
     use akka_persistence_rs::{EntityId, EntityType, PersistenceId};
-    use akka_persistence_rs_commitlog::EventEnvelope;
-    use akka_projection_rs::HandlerError;
     use async_stream::stream;
     use async_trait::async_trait;
-    use chrono::Utc;
     use serde::Deserialize;
-    use streambed::secret_store::{
-        AppRoleAuthReply, Error, GetSecretReply, SecretData, SecretStore, UserPassAuthReply,
-    };
     use test_log::test;
     use tokio_stream::Stream;
 
     // Scaffolding
+
+    struct TestEnvelope {
+        persistence_id: PersistenceId,
+        seq_nr: u64,
+        offset: u64,
+        event: MyEvent,
+    }
+
+    impl WithPersistenceId for TestEnvelope {
+        fn persistence_id(&self) -> &PersistenceId {
+            &self.persistence_id
+        }
+    }
+
+    impl WithOffset for TestEnvelope {
+        fn offset(&self) -> Offset {
+            Offset::Sequence(self.offset)
+        }
+    }
+
+    impl WithSource for TestEnvelope {
+        fn source(&self) -> akka_persistence_rs::Source {
+            todo!()
+        }
+    }
+
+    impl WithSeqNr for TestEnvelope {
+        fn seq_nr(&self) -> u64 {
+            self.seq_nr
+        }
+    }
 
     #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
     struct MyEvent {
@@ -190,64 +239,6 @@ mod tests {
     // can lay out an envelope any way that you would like to. Note that secret keys
     // are important though.
 
-    #[derive(Clone)]
-    struct NoopSecretStore;
-
-    #[async_trait]
-    impl SecretStore for NoopSecretStore {
-        async fn approle_auth(
-            &self,
-            _role_id: &str,
-            _secret_id: &str,
-        ) -> Result<AppRoleAuthReply, Error> {
-            panic!("should not be called")
-        }
-
-        async fn create_secret(
-            &self,
-            _secret_path: &str,
-            _secret_data: SecretData,
-        ) -> Result<(), Error> {
-            panic!("should not be called")
-        }
-
-        async fn get_secret(&self, _secret_path: &str) -> Result<Option<GetSecretReply>, Error> {
-            let mut data = HashMap::new();
-            data.insert(
-                "value".to_string(),
-                "ed31e94c161aea6ff2300c72b17741f7".to_string(),
-            );
-
-            Ok(Some(GetSecretReply {
-                lease_duration: 10,
-                data: SecretData { data },
-            }))
-        }
-
-        async fn token_auth(&self, _token: &str) -> Result<(), Error> {
-            panic!("should not be called")
-        }
-
-        async fn userpass_auth(
-            &self,
-            _username: &str,
-            _password: &str,
-        ) -> Result<UserPassAuthReply, Error> {
-            panic!("should not be called")
-        }
-
-        async fn userpass_create_update_user(
-            &self,
-            _current_username: &str,
-            _username: &str,
-            _password: &str,
-        ) -> Result<(), Error> {
-            panic!("should not be called")
-        }
-    }
-
-    const MIN_SAVE_OFFSET_INTERVAL: Duration = Duration::from_millis(100);
-
     struct MySourceProvider {
         persistence_id: PersistenceId,
         event_value: String,
@@ -255,33 +246,38 @@ mod tests {
 
     #[async_trait]
     impl SourceProvider for MySourceProvider {
-        type Envelope = EventEnvelope<MyEvent>;
+        type Envelope = TestEnvelope;
 
         async fn source<F, FR>(
-            &mut self,
+            &self,
             offset: F,
         ) -> Pin<Box<dyn Stream<Item = Self::Envelope> + Send + 'async_trait>>
         where
             F: Fn() -> FR + Send + Sync,
-            FR: Future<Output = Option<Offset>> + Send,
+            FR: Future<Output = Option<LastOffset>> + Send,
         {
             Box::pin(
                 stream! {
                     if offset().await.is_none() {
-                        yield EventEnvelope {
+                        yield TestEnvelope {
                             persistence_id: self.persistence_id.clone(),
                             seq_nr: 1,
-                            timestamp: Utc::now(),
                             event: MyEvent {
                                 value: self.event_value.clone(),
                             },
                             offset: 0,
-                            tags: vec![]
                         }
                     }
                 }
                 .chain(stream::pending()),
             )
+        }
+        async fn load_envelope(
+            &self,
+            _persistence_id: PersistenceId,
+            _sequence_nr: u64,
+        ) -> Option<Self::Envelope> {
+            None // FIXME
         }
     }
 
@@ -292,7 +288,7 @@ mod tests {
 
     #[async_trait]
     impl Handler for MyHandler {
-        type Envelope = EventEnvelope<MyEvent>;
+        type Envelope = TestEnvelope;
 
         /// Process an envelope.
         async fn process(&mut self, envelope: Self::Envelope) -> Result<(), HandlerError> {
@@ -314,7 +310,7 @@ mod tests {
 
     #[async_trait]
     impl PendingHandler for MyHandlerPending {
-        type Envelope = EventEnvelope<MyEvent>;
+        type Envelope = TestEnvelope;
 
         const MAX_PENDING: usize = 1;
 
@@ -355,12 +351,10 @@ mod tests {
         let (_registration_projection_command, registration_projection_command_receiver) =
             oneshot::channel();
 
-        let task_storage_path = storage_path.clone();
+        let (offset_store, _) = mpsc::channel(1); // FIXME
         tokio::spawn(async move {
             run(
-                &NoopSecretStore,
-                "some-secret-path",
-                &task_storage_path,
+                offset_store,
                 registration_projection_command_receiver,
                 MySourceProvider {
                     persistence_id: persistence_id.clone(),
@@ -370,22 +364,11 @@ mod tests {
                     persistence_id: persistence_id.clone(),
                     event_value: event_value.clone(),
                 },
-                MIN_SAVE_OFFSET_INTERVAL,
             )
             .await
         });
 
-        // Wait until our storage file becomes available, which means
-        // that an event will have to have been successfully processed.
-        let mut file_found = false;
-        for _ in 0..10 {
-            if fs::metadata(&storage_path).is_ok() {
-                file_found = true;
-                break;
-            }
-            time::sleep(Duration::from_millis(100)).await;
-        }
-        assert!(file_found);
+        // FIXME derive a test of the watch channel being set.
     }
 
     #[test(tokio::test)]
@@ -407,12 +390,10 @@ mod tests {
         let (_registration_projection_command, registration_projection_command_receiver) =
             oneshot::channel();
 
-        let task_storage_path = storage_path.clone();
+        let (offset_store, _) = mpsc::channel(1); // FIXME
         tokio::spawn(async move {
             run(
-                &NoopSecretStore,
-                "some-secret-path",
-                &task_storage_path,
+                offset_store,
                 registration_projection_command_receiver,
                 MySourceProvider {
                     persistence_id: persistence_id.clone(),
@@ -422,21 +403,10 @@ mod tests {
                     persistence_id: persistence_id.clone(),
                     event_value: event_value.clone(),
                 },
-                MIN_SAVE_OFFSET_INTERVAL,
             )
             .await
         });
 
-        // Wait until our storage file becomes available, which means
-        // that an event will have to have been successfully processed.
-        let mut file_found = false;
-        for _ in 0..10 {
-            if fs::metadata(&storage_path).is_ok() {
-                file_found = true;
-                break;
-            }
-            time::sleep(Duration::from_millis(100)).await;
-        }
-        assert!(file_found);
+        // FIXME derive a test of the watch channel being set.
     }
 }

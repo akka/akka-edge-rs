@@ -1,17 +1,20 @@
 use akka_persistence_rs::EntityId;
 use akka_persistence_rs::EntityType;
 use akka_persistence_rs::PersistenceId;
-use akka_persistence_rs::TimestampOffset;
+use akka_persistence_rs::Source;
 use akka_persistence_rs::WithPersistenceId;
 use akka_persistence_rs::WithSeqNr;
+use akka_persistence_rs::WithSource;
 use akka_persistence_rs::WithTags;
-use akka_persistence_rs::WithTimestampOffset;
+use akka_persistence_rs::WithTimestamp;
 use akka_projection_rs::consumer_filter::Filter;
 use akka_projection_rs::consumer_filter::FilterCriteria;
 use akka_projection_rs::HandlerError;
 use akka_projection_rs::PendingHandler;
 use async_stream::stream;
 use async_trait::async_trait;
+use chrono::DateTime;
+use chrono::Utc;
 use futures::future;
 use log::debug;
 use log::warn;
@@ -38,8 +41,9 @@ use crate::StreamId;
 /// passing data on to a gRPC producer.
 pub struct Transformation<E> {
     pub entity_id: EntityId,
+    pub timestamp: DateTime<Utc>,
     pub seq_nr: u64,
-    pub offset: TimestampOffset,
+    pub source: Source,
     pub event: Option<E>,
 }
 
@@ -57,7 +61,7 @@ pub struct GrpcEventProcessor<E, EI, PF, T> {
 #[async_trait]
 impl<EI, E, PF, T> PendingHandler for GrpcEventProcessor<E, EI, PF, T>
 where
-    EI: WithPersistenceId + WithSeqNr + WithTags + WithTimestampOffset + Send,
+    EI: WithPersistenceId + WithSeqNr + WithSource + WithTags + WithTimestamp + Send,
     E: Send,
     PF: Fn(&EI) -> bool + Send,
     T: Fn(&EI) -> Option<E> + Send,
@@ -84,8 +88,9 @@ where
 
         let transformation = Transformation {
             entity_id: envelope.persistence_id().entity_id.clone(),
+            timestamp: *envelope.timestamp(),
             seq_nr: envelope.seq_nr(),
-            offset: envelope.timestamp_offset(),
+            source: envelope.source(),
             event,
         };
         let result = self.flow.process(transformation).await;
@@ -150,9 +155,10 @@ impl<E> GrpcEventFlow<E> {
             .send((
                 EventEnvelope {
                     persistence_id,
+                    timestamp: transformation.timestamp,
                     seq_nr: transformation.seq_nr,
+                    source: transformation.source,
                     event: transformation.event,
-                    offset: transformation.offset,
                 },
                 reply,
             ))
@@ -228,8 +234,8 @@ pub async fn run<E, EC, ECR>(
 
                 while let Some(envelope) = event_in_receiver.recv().await {
                     let timestamp = prost_types::Timestamp {
-                        seconds: envelope.offset.timestamp.timestamp(),
-                        nanos: envelope.offset.timestamp.timestamp_nanos_opt().unwrap_or_default() as i32
+                        seconds: envelope.timestamp().timestamp(),
+                        nanos: envelope.timestamp().timestamp_nanos_opt().unwrap_or_default() as i32
                     };
 
                     if let Some(event) = envelope.event {
@@ -476,15 +482,13 @@ mod tests {
             .send((
                 EventEnvelope {
                     persistence_id: "entity-type|entity-id".parse().unwrap(),
+                    timestamp: Utc::now(),
                     seq_nr: 1,
+                    source: Source::Regular,
                     event: Some(prost_types::Duration {
                         seconds: 0,
                         nanos: 0
                     }),
-                    offset: TimestampOffset {
-                        timestamp: Utc::now(),
-                        seen: vec![]
-                    }
                 },
                 reply,
             ))

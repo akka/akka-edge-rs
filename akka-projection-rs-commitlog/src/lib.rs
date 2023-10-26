@@ -6,7 +6,7 @@ use std::{future::Future, marker::PhantomData, ops::Range, pin::Pin};
 
 use akka_persistence_rs::{Offset, PersistenceId};
 use akka_persistence_rs_commitlog::{CommitLogMarshaler, EventEnvelope};
-use akka_projection_rs::SourceProvider;
+use akka_projection_rs::{offset_store::LastOffset, SourceProvider};
 use async_stream::stream;
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
@@ -63,9 +63,9 @@ where
 
     async fn events_by_slices(
         &self,
-        offset: Option<Offset>,
+        offset: Option<LastOffset>,
     ) -> Pin<Box<dyn Stream<Item = EventEnvelope<E>> + Send + '_>> {
-        let offsets = if let Some(Offset::Sequence(offset)) = offset {
+        let offsets = if let Some((_, Offset::Sequence(offset))) = offset {
             vec![ConsumerOffset {
                 partition: 0,
                 offset,
@@ -117,15 +117,23 @@ where
     type Envelope = EventEnvelope<E>;
 
     async fn source<F, FR>(
-        &mut self,
+        &self,
         offset: F,
     ) -> Pin<Box<dyn Stream<Item = Self::Envelope> + Send + 'async_trait>>
     where
         F: Fn() -> FR + Send + Sync,
-        FR: Future<Output = Option<Offset>> + Send,
+        FR: Future<Output = Option<LastOffset>> + Send,
     {
         let offset = offset().await;
         self.events_by_slices(offset).await
+    }
+
+    async fn load_envelope(
+        &self,
+        _persistence_id: PersistenceId,
+        _sequence_nr: u64,
+    ) -> Option<Self::Envelope> {
+        None // Backtracking for commit logs etc isn't supported so we don't need to query for a specific event
     }
 }
 
@@ -254,7 +262,7 @@ mod tests {
 
         // Source that event just produced.
 
-        let mut source_provider = CommitLogSourceProvider::new(
+        let source_provider = CommitLogSourceProvider::new(
             commit_log.clone(),
             MyEventMarshaler,
             "some-consumer",

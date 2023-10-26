@@ -1,19 +1,20 @@
 #![doc = include_str!("../README.md")]
 
+use chrono::{DateTime, Utc};
+use jdk::StringHasher;
+use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 use std::{
     fmt::{self, Display, Write},
-    num::Wrapping,
+    hash::{BuildHasher, Hash, Hasher},
     ops::Range,
     str::FromStr,
 };
 
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
-
 pub mod effect;
 pub mod entity;
 pub mod entity_manager;
+pub mod jdk;
 
 /// Uniquely identifies the type of an Entity.
 pub type EntityType = SmolStr;
@@ -56,21 +57,6 @@ pub fn slice_ranges(number_of_ranges: u32) -> Vec<Range<u32>> {
     ranges
 }
 
-// Implementation of the JDK8 string hashcode:
-// https://docs.oracle.com/javase/8/docs/api/java/lang/String.html#hashCode
-fn jdk_string_hashcode(s: &str) -> i32 {
-    let mut hash = Wrapping(0i32);
-    const MULTIPLIER: Wrapping<i32> = Wrapping(31);
-    let count = s.len();
-    if count > 0 {
-        let mut chars = s.chars();
-        for _ in 0..count {
-            hash = hash * MULTIPLIER + Wrapping(chars.next().unwrap() as i32);
-        }
-    }
-    hash.0
-}
-
 /// A namespaced entity id given an entity type.
 #[derive(Clone, Debug, Deserialize, PartialOrd, Ord, Serialize, PartialEq, Eq, Hash)]
 pub struct PersistenceId {
@@ -87,7 +73,16 @@ impl PersistenceId {
     }
 
     pub fn slice(&self) -> u32 {
-        (jdk_string_hashcode(&self.to_string()) % NUMBER_OF_SLICES as i32).unsigned_abs()
+        (self.jdk_string_hash() % NUMBER_OF_SLICES as i32).unsigned_abs()
+    }
+
+    pub fn jdk_string_hash(&self) -> i32 {
+        let mut hasher = StringHasher.build_hasher();
+        hasher.write(self.entity_type.as_bytes());
+        hasher.write(b"|");
+        hasher.write(self.entity_id.as_bytes());
+
+        hasher.finish() as i32
     }
 }
 
@@ -143,10 +138,16 @@ impl<C> Message<C> {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct TimestampOffset {
     pub timestamp: DateTime<Utc>,
-    pub seen: Vec<(PersistenceId, u64)>,
+    pub seq_nr: u64,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+impl PartialOrd for TimestampOffset {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.timestamp.partial_cmp(&other.timestamp)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub enum Offset {
     /// Corresponds to an ordered sequence number for the events. Note that the corresponding
     /// offset of each event is provided in an Envelope,
@@ -171,26 +172,54 @@ pub trait WithOffset {
     fn offset(&self) -> Offset;
 }
 
-/// Implemented by structures that can return a timestamp offset.
-pub trait WithTimestampOffset {
-    fn timestamp_offset(&self) -> TimestampOffset;
-}
-
 /// Implemented by structures that can return a sequence number.
 pub trait WithSeqNr {
     fn seq_nr(&self) -> u64;
 }
 
+/// An event source descriptor
+#[derive(Clone, Debug, PartialEq)]
+pub enum Source {
+    /// For backtracking events.
+    Backtrack,
+    /// For ordinary events.
+    Regular,
+    /// For PubSub events.
+    PubSub,
+}
+
+/// It is an error if there is a string representation that is not one of:
+/// "" for ordinary events.
+/// "BT" for backtracking events.
+/// "PS" for PubSub events.
+pub struct CannotSourceError;
+
+impl FromStr for Source {
+    type Err = CannotSourceError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "" => Ok(Source::Regular),
+            "BT" => Ok(Source::Regular),
+            "PS" => Ok(Source::Regular),
+            _ => Err(CannotSourceError),
+        }
+    }
+}
+
+/// Implemented by structures that can return a source.
+pub trait WithSource {
+    fn source(&self) -> Source;
+}
+
+/// Implemented by structures that can return a timestamp.
+pub trait WithTimestamp {
+    fn timestamp(&self) -> &DateTime<Utc>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_jdk_string_hashcode() {
-        assert_eq!(jdk_string_hashcode(""), 0);
-        assert_eq!(jdk_string_hashcode("howtodoinjava.com"), 1894145264);
-        assert_eq!(jdk_string_hashcode("hello world"), 1794106052);
-    }
 
     #[test]
     fn test_slice_for_persistence_id() {
