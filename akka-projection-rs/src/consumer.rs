@@ -64,60 +64,70 @@ pub async fn run<A, B, E, IH, SP>(
                 envelope = active_source.next() => {
                     if let Some(envelope) = envelope {
                         let persistence_id = envelope.persistence_id().clone();
+                        let offset = envelope.offset();
 
-                        // Process the sequence number. If it isn't what we expect then we go round again.
+                        // Validate timestamp offsets if we have one.
+                        let envelope = if matches!(offset, Offset::Timestamp(_)) {
+                            // Process the sequence number. If it isn't what we expect then we go round again.
 
-                        let seq_nr = envelope.seq_nr();
+                            let seq_nr = envelope.seq_nr();
 
-                        let (reply_to, reply_to_receiver) = oneshot::channel();
-                        if offset_store
-                            .send(offset_store::Command::GetOffset { persistence_id: persistence_id.clone(), reply_to })
-                            .await
-                            .is_err()
-                        {
-                            warn!("Cannot send to the offset store: {}. Aborting stream.", persistence_id);
-                            break;
-                        }
-
-                        let next_seq_nr = if let Ok(Some(Offset::Timestamp(TimestampOffset { seq_nr, .. }))) = reply_to_receiver.await {
-                            seq_nr.wrapping_add(1)
-                        } else {
-                            warn!("Cannot receive from the offset store: {}. Aborting stream.", persistence_id);
-                            break
-                        };
-
-                        let source = envelope.source();
-
-                        if seq_nr > next_seq_nr && envelope.source() == Source::Backtrack {
-                            // This shouldn't happen, if so then abort.
-                            warn!("Back track received for a future event: {}. Aborting stream.", persistence_id);
-                            break;
-                        } else if seq_nr != next_seq_nr {
-                            // Duplicate or gap
-                            continue;
-                        }
-
-                        // If the sequence number is what we expect and the producer is backtracking, then
-                        // request its payload. If we can't get its payload then we abort as it is an error.
-
-                        let resolved_envelope = if source == Source::Backtrack {
-                            if let Some(event) = source_provider.load_envelope(persistence_id.clone(), seq_nr)
+                            let (reply_to, reply_to_receiver) = oneshot::channel();
+                            if offset_store
+                                .send(offset_store::Command::GetOffset { persistence_id: persistence_id.clone(), reply_to })
                                 .await
+                                .is_err()
                             {
-                                Some(event)
-                            } else {
-                                warn!("Cannot obtain an backtrack envelope: {}. Aborting stream.", persistence_id);
-                                None
+                                warn!("Cannot send to the offset store: {}. Aborting stream.", persistence_id);
+                                break;
                             }
-                        } else {
-                            Some(envelope)
-                        };
 
-                        let Some(envelope) = resolved_envelope else { break; };
+                            let next_seq_nr = if let Ok(offset) = reply_to_receiver.await {
+                                if let Some(Offset::Timestamp(TimestampOffset { seq_nr, .. })) = offset {
+                                    seq_nr.wrapping_add(1)
+                                } else {
+                                    1
+                                }
+                            } else {
+                                warn!("Cannot receive from the offset store: {}. Aborting stream.", persistence_id);
+                                break
+                            };
+
+                            let source = envelope.source();
+
+                            if seq_nr > next_seq_nr && envelope.source() == Source::Backtrack {
+                                // This shouldn't happen, if so then abort.
+                                warn!("Back track received for a future event: {}. Aborting stream.", persistence_id);
+                                break;
+                            } else if seq_nr != next_seq_nr {
+                                // Duplicate or gap
+                                continue;
+                            }
+
+                            // If the sequence number is what we expect and the producer is backtracking, then
+                            // request its payload. If we can't get its payload then we abort as it is an error.
+
+                            let resolved_envelope = if source == Source::Backtrack {
+                                if let Some(event) = source_provider.load_envelope(persistence_id.clone(), seq_nr)
+                                    .await
+                                {
+                                    Some(event)
+                                } else {
+                                    warn!("Cannot obtain an backtrack envelope: {}. Aborting stream.", persistence_id);
+                                    None
+                                }
+                            } else {
+                                Some(envelope)
+                            };
+
+                            let Some(envelope) = resolved_envelope else { break; };
+                            envelope
+                        } else {
+                            envelope
+                        };
 
                         // We now have an event correctly sequenced. Process it.
 
-                        let offset = envelope.offset();
                         match &mut handler {
                             Handlers::Ready(handler, _) => {
                                 if handler.process(envelope).await.is_err()
@@ -180,13 +190,14 @@ pub async fn run<A, B, E, IH, SP>(
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs, future::Future, pin::Pin};
+    use std::{future::Future, pin::Pin};
 
     use super::*;
     use crate::{offset_store::LastOffset, HandlerError};
     use akka_persistence_rs::{EntityId, EntityType, PersistenceId};
     use async_stream::stream;
     use async_trait::async_trait;
+    use chrono::{DateTime, Utc};
     use serde::Deserialize;
     use test_log::test;
     use tokio_stream::Stream;
@@ -195,8 +206,9 @@ mod tests {
 
     struct TestEnvelope {
         persistence_id: PersistenceId,
+        timestamp: DateTime<Utc>,
         seq_nr: u64,
-        offset: u64,
+        source: Source,
         event: MyEvent,
     }
 
@@ -208,13 +220,16 @@ mod tests {
 
     impl WithOffset for TestEnvelope {
         fn offset(&self) -> Offset {
-            Offset::Sequence(self.offset)
+            Offset::Timestamp(TimestampOffset {
+                timestamp: self.timestamp,
+                seq_nr: self.seq_nr,
+            })
         }
     }
 
     impl WithSource for TestEnvelope {
         fn source(&self) -> akka_persistence_rs::Source {
-            todo!()
+            self.source.clone()
         }
     }
 
@@ -261,12 +276,23 @@ mod tests {
                     if offset().await.is_none() {
                         yield TestEnvelope {
                             persistence_id: self.persistence_id.clone(),
+                            timestamp: Utc::now(),
                             seq_nr: 1,
                             event: MyEvent {
                                 value: self.event_value.clone(),
                             },
-                            offset: 0,
-                        }
+                            source: Source::Backtrack,
+                        };
+
+                        yield TestEnvelope {
+                            persistence_id: self.persistence_id.clone(),
+                            timestamp: Utc::now(),
+                            seq_nr: 2,
+                            event: MyEvent {
+                                value: self.event_value.clone(),
+                            },
+                            source: Source::Regular,
+                        };
                     }
                 }
                 .chain(stream::pending()),
@@ -274,10 +300,22 @@ mod tests {
         }
         async fn load_envelope(
             &self,
-            _persistence_id: PersistenceId,
-            _sequence_nr: u64,
+            persistence_id: PersistenceId,
+            seq_nr: u64,
         ) -> Option<Self::Envelope> {
-            None // FIXME
+            if persistence_id == self.persistence_id && seq_nr == 1 {
+                Some(TestEnvelope {
+                    persistence_id: self.persistence_id.clone(),
+                    timestamp: Utc::now(),
+                    seq_nr: 1,
+                    event: MyEvent {
+                        value: self.event_value.clone(),
+                    },
+                    source: Source::Regular,
+                })
+            } else {
+                None
+            }
         }
     }
 
@@ -331,82 +369,126 @@ mod tests {
         }
     }
 
-    #[test(tokio::test)]
-    async fn can_run_ready() {
-        let storage_path = env::temp_dir().join("can_run_completed");
-        let _ = fs::remove_dir_all(&storage_path);
-        let _ = fs::create_dir_all(&storage_path);
-        let storage_path = storage_path.join("offsets");
-        println!("Writing to {}", storage_path.to_string_lossy());
-
-        // Scaffolding
-
-        let entity_type = EntityType::from("some-entity-type");
-        let entity_id = EntityId::from("some-entity");
-        let persistence_id = PersistenceId::new(entity_type, entity_id);
-        let event_value = "some value".to_string();
-
+    async fn test_projection<A, B, IH>(
+        persistence_id: PersistenceId,
+        event_value: String,
+        handler: IH,
+    ) where
+        A: Handler<Envelope = TestEnvelope> + Send,
+        B: PendingHandler<Envelope = TestEnvelope> + Send,
+        IH: Into<Handlers<A, B>> + Send + 'static,
+    {
         // Process an event.
 
         let (_registration_projection_command, registration_projection_command_receiver) =
             oneshot::channel();
 
-        let (offset_store, _) = mpsc::channel(1); // FIXME
+        let (offset_store, mut offset_store_receiver) = mpsc::channel(1);
+        let task_persistence_id = persistence_id.clone();
         tokio::spawn(async move {
             run(
                 offset_store,
                 registration_projection_command_receiver,
                 MySourceProvider {
-                    persistence_id: persistence_id.clone(),
+                    persistence_id: task_persistence_id.clone(),
                     event_value: event_value.clone(),
                 },
-                MyHandler {
-                    persistence_id: persistence_id.clone(),
-                    event_value: event_value.clone(),
-                },
+                handler,
             )
             .await
         });
 
-        // FIXME derive a test of the watch channel being set.
+        if let Some(offset_store::Command::GetLastOffset { reply_to }) =
+            offset_store_receiver.recv().await
+        {
+            assert!(reply_to.send(None).is_ok());
+        } else {
+            panic!("Unexpected offset command");
+        }
+
+        if let Some(offset_store::Command::GetOffset {
+            persistence_id: pid,
+            reply_to,
+        }) = offset_store_receiver.recv().await
+        {
+            if pid == persistence_id {
+                assert!(reply_to.send(None).is_ok());
+            } else {
+                panic!("Unexpected pid");
+            }
+        } else {
+            panic!("Unexpected offset command");
+        }
+
+        assert!(matches!(
+            offset_store_receiver.recv().await,
+            Some(offset_store::Command::SaveOffset {
+                persistence_id: pid,
+                offset: Offset::Timestamp(TimestampOffset { seq_nr: 1, .. })
+            }) if pid == persistence_id
+        ));
+
+        if let Some(offset_store::Command::GetOffset {
+            persistence_id: pid,
+            reply_to,
+        }) = offset_store_receiver.recv().await
+        {
+            if pid == persistence_id {
+                assert!(reply_to
+                    .send(Some(Offset::Timestamp(TimestampOffset {
+                        timestamp: Utc::now(),
+                        seq_nr: 1
+                    })))
+                    .is_ok());
+            } else {
+                panic!("Unexpected pid");
+            }
+        } else {
+            panic!("Unexpected offset command");
+        }
+
+        assert!(matches!(
+            offset_store_receiver.recv().await,
+            Some(offset_store::Command::SaveOffset {
+                persistence_id: pid,
+                offset: Offset::Timestamp(TimestampOffset { seq_nr: 2, .. })
+            }) if pid == persistence_id
+        ));
+    }
+
+    #[test(tokio::test)]
+    async fn can_run_ready() {
+        let entity_type = EntityType::from("some-entity-type");
+        let entity_id = EntityId::from("some-entity");
+        let persistence_id = PersistenceId::new(entity_type, entity_id);
+        let event_value = "some value".to_string();
+
+        test_projection(
+            persistence_id.clone(),
+            event_value.clone(),
+            MyHandler {
+                persistence_id,
+                event_value,
+            },
+        )
+        .await;
     }
 
     #[test(tokio::test)]
     async fn can_run_pending() {
-        let storage_path = env::temp_dir().join("can_run_pending/offsets");
-        let _ = fs::remove_dir_all(&storage_path);
-        let _ = fs::create_dir_all(&storage_path);
-        let storage_path = storage_path.join("offsets");
-        println!("Writing to {}", storage_path.to_string_lossy());
-
-        // Scaffolding
-
         let entity_type = EntityType::from("some-entity-type");
         let entity_id = EntityId::from("some-entity");
         let persistence_id = PersistenceId::new(entity_type, entity_id);
         let event_value = "some value".to_string();
 
-        // Process an event.
-        let (_registration_projection_command, registration_projection_command_receiver) =
-            oneshot::channel();
-
-        let (offset_store, _) = mpsc::channel(1); // FIXME
-        tokio::spawn(async move {
-            run(
-                offset_store,
-                registration_projection_command_receiver,
-                MySourceProvider {
-                    persistence_id: persistence_id.clone(),
-                    event_value: event_value.clone(),
-                },
-                MyHandlerPending {
-                    persistence_id: persistence_id.clone(),
-                    event_value: event_value.clone(),
-                },
-            )
-            .await
-        });
-
-        // FIXME derive a test of the watch channel being set.
+        test_projection(
+            persistence_id.clone(),
+            event_value.clone(),
+            MyHandlerPending {
+                persistence_id,
+                event_value,
+            },
+        )
+        .await;
     }
 }

@@ -111,7 +111,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
         let task_events_processed = events_processed.clone();
         let _ = rt.spawn(async move {
-            let (offset_store, _) = mpsc::channel(1); // FIXME
+            let (offset_store, _) = mpsc::channel(1);
             consumer::run(
                 offset_store,
                 registration_projection_command_receiver,
