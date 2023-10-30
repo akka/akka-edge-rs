@@ -200,8 +200,8 @@ impl FromStr for Source {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "" => Ok(Source::Regular),
-            "BT" => Ok(Source::Regular),
-            "PS" => Ok(Source::Regular),
+            "BT" => Ok(Source::Backtrack),
+            "PS" => Ok(Source::PubSub),
             _ => Err(CannotSourceError),
         }
     }
