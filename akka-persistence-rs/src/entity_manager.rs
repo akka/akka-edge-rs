@@ -79,10 +79,10 @@ pub trait Handler<E> {
     async fn process(&mut self, envelope: EventEnvelope<E>) -> io::Result<EventEnvelope<E>>;
 }
 
-/// An opaque type internal to the library. The type records the public and private
-/// state of an entity in the context of the entity manager and friends.
+// An opaque type internal to the library. The type records the public and private
+// state of an entity in the context of the entity manager and friends.
 #[derive(Default)]
-pub struct EntityStatus<S> {
+struct EntityStatus<S> {
     pub(crate) state: S,
     pub(crate) last_seq_nr: u64,
 }
