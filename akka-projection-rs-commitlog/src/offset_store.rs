@@ -333,3 +333,223 @@ pub async fn run(
     let (_, r2) = tokio::join!(offset_command_handler, entity_manager_runner);
     r2
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{env, fs};
+
+    use super::*;
+
+    use akka_persistence_rs::TimestampOffset;
+    use test_log::test;
+
+    #[test(tokio::test)]
+    async fn test_get_last_offsets() {
+        let logged_dir = env::temp_dir().join("test_get_last_offsets");
+        let _ = fs::remove_dir_all(&logged_dir);
+        let _ = fs::create_dir_all(&logged_dir);
+        println!("Writing to {}", logged_dir.to_string_lossy());
+
+        let commit_log = FileLog::new(logged_dir);
+        let (offset_store, offset_store_receiver) = mpsc::channel(1);
+
+        // Shouldn't be any offsets right now
+
+        tokio::spawn(run(
+            commit_log,
+            10,
+            OffsetStoreId::from("some-offset-id"),
+            offset_store_receiver,
+        ));
+
+        let (reply_to, reply_to_receiver) = oneshot::channel();
+        offset_store
+            .send(offset_store::Command::GetLastOffset { reply_to })
+            .await
+            .unwrap();
+        assert_eq!(reply_to_receiver.await, Ok(None));
+
+        // Save an offset
+
+        let persistence_id_0 = PersistenceId::new(
+            EntityType::from("entity-type"),
+            EntityId::from("entity-id0"),
+        );
+
+        let timestamp_0 = Utc::now();
+        let seq_nr_0 = 2;
+
+        offset_store
+            .send(offset_store::Command::SaveOffset {
+                persistence_id: persistence_id_0.clone(),
+                offset: Offset::Timestamp(TimestampOffset {
+                    timestamp: timestamp_0,
+                    seq_nr: seq_nr_0,
+                }),
+            })
+            .await
+            .unwrap();
+
+        // We should be able to read that offset back
+
+        let (reply_to, reply_to_receiver) = oneshot::channel();
+        offset_store
+            .send(offset_store::Command::GetOffset {
+                persistence_id: persistence_id_0.clone(),
+                reply_to,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            reply_to_receiver.await,
+            Ok(Some(Offset::Timestamp(TimestampOffset {
+                timestamp: timestamp_0,
+                seq_nr: seq_nr_0
+            })))
+        );
+
+        // The latest offset should now reflect the one we just added.
+
+        let (reply_to, reply_to_receiver) = oneshot::channel();
+        offset_store
+            .send(offset_store::Command::GetLastOffset { reply_to })
+            .await
+            .unwrap();
+        assert_eq!(
+            reply_to_receiver.await,
+            Ok(Some((
+                vec![persistence_id_0.clone()],
+                Offset::Timestamp(TimestampOffset {
+                    timestamp: timestamp_0,
+                    seq_nr: seq_nr_0
+                })
+            )))
+        );
+
+        // Add another for the same persistence id that has an earlier timestamp. Shouldn't affect the
+        // latest one.
+
+        let timestamp_1 = timestamp_0 - chrono::Duration::minutes(1);
+        let seq_nr_1 = 1;
+
+        offset_store
+            .send(offset_store::Command::SaveOffset {
+                persistence_id: persistence_id_0.clone(),
+                offset: Offset::Timestamp(TimestampOffset {
+                    timestamp: timestamp_1,
+                    seq_nr: seq_nr_1,
+                }),
+            })
+            .await
+            .unwrap();
+
+        // The latest offset should be as it was before.
+
+        let (reply_to, reply_to_receiver) = oneshot::channel();
+        offset_store
+            .send(offset_store::Command::GetLastOffset { reply_to })
+            .await
+            .unwrap();
+        assert_eq!(
+            reply_to_receiver.await,
+            Ok(Some((
+                vec![persistence_id_0.clone()],
+                Offset::Timestamp(TimestampOffset {
+                    timestamp: timestamp_0,
+                    seq_nr: seq_nr_0
+                })
+            )))
+        );
+
+        // Add another for the same persistence id that has an later timestamp.
+
+        let timestamp_2 = timestamp_0 + chrono::Duration::minutes(1);
+        let seq_nr_2 = 3;
+
+        offset_store
+            .send(offset_store::Command::SaveOffset {
+                persistence_id: persistence_id_0.clone(),
+                offset: Offset::Timestamp(TimestampOffset {
+                    timestamp: timestamp_2,
+                    seq_nr: seq_nr_2,
+                }),
+            })
+            .await
+            .unwrap();
+
+        // We should be able to read that offset back
+
+        let (reply_to, reply_to_receiver) = oneshot::channel();
+        offset_store
+            .send(offset_store::Command::GetOffset {
+                persistence_id: persistence_id_0.clone(),
+                reply_to,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            reply_to_receiver.await,
+            Ok(Some(Offset::Timestamp(TimestampOffset {
+                timestamp: timestamp_2,
+                seq_nr: seq_nr_2
+            })))
+        );
+
+        // The latest offset should now be as per the the above.
+
+        let (reply_to, reply_to_receiver) = oneshot::channel();
+        offset_store
+            .send(offset_store::Command::GetLastOffset { reply_to })
+            .await
+            .unwrap();
+        assert_eq!(
+            reply_to_receiver.await,
+            Ok(Some((
+                vec![persistence_id_0.clone()],
+                Offset::Timestamp(TimestampOffset {
+                    timestamp: timestamp_2,
+                    seq_nr: seq_nr_2
+                })
+            )))
+        );
+
+        // Add another for a new persistence id that has an earlier timestamp.
+
+        let persistence_id_1 = PersistenceId::new(
+            EntityType::from("entity-type"),
+            EntityId::from("entity-id1"),
+        );
+
+        let timestamp_3 = timestamp_0 - chrono::Duration::minutes(1);
+        let seq_nr_3 = 1;
+
+        offset_store
+            .send(offset_store::Command::SaveOffset {
+                persistence_id: persistence_id_1,
+                offset: Offset::Timestamp(TimestampOffset {
+                    timestamp: timestamp_3,
+                    seq_nr: seq_nr_3,
+                }),
+            })
+            .await
+            .unwrap();
+
+        // The latest offset should not have changed.
+
+        let (reply_to, reply_to_receiver) = oneshot::channel();
+        offset_store
+            .send(offset_store::Command::GetLastOffset { reply_to })
+            .await
+            .unwrap();
+        assert_eq!(
+            reply_to_receiver.await,
+            Ok(Some((
+                vec![persistence_id_0],
+                Offset::Timestamp(TimestampOffset {
+                    timestamp: timestamp_2,
+                    seq_nr: seq_nr_2
+                })
+            )))
+        );
+    }
+}
