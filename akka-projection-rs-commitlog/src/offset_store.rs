@@ -1,7 +1,7 @@
 //! An offset store for use with the Streambed commit log.
 
 use akka_persistence_rs::{
-    effect::{emit_event, reply, then, Effect, EffectExt},
+    effect::{emit_event, reply, Effect, EffectExt},
     entity::{Context, EventSourcedBehavior},
     entity_manager, EntityId, EntityType, Message, Offset, PersistenceId,
 };
@@ -139,12 +139,12 @@ mod internal {
                     persistence_id: persistence_id.clone(),
                     offset,
                 })
-                .and(then(|behavior: &Self, state, result| {
+                .and_then(|behavior: &Self, state, result| {
                     if result.is_ok() {
                         behavior.update_last_offset(state, persistence_id);
                     }
                     async { result }
-                }))
+                })
                 .boxed(),
             }
         }

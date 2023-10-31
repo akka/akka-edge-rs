@@ -306,7 +306,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        effect::{emit_deletion_event, emit_event, reply, then, unhandled, Effect, EffectExt},
+        effect::{emit_deletion_event, emit_event, reply, unhandled, Effect, EffectExt},
         entity::Context,
     };
     use async_trait::async_trait;
@@ -374,7 +374,7 @@ mod tests {
 
                 TempCommand::UpdateTemperature { temp } if state.registered => {
                     emit_event(TempEvent::TemperatureUpdated { temp })
-                        .and(then(|behavior: &Self, new_state, prev_result| {
+                        .and_then(|behavior: &Self, new_state, prev_result| {
                             let updated = behavior.updated.clone();
                             let temp = new_state.map_or(0, |s| s.temp);
                             async move {
@@ -384,7 +384,7 @@ mod tests {
                                 }
                                 prev_result
                             }
-                        }))
+                        })
                         .boxed()
                 }
 

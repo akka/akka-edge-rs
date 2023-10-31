@@ -113,6 +113,29 @@ where
         }
     }
 
+    /// Perform a side effect to run a function asynchronously after this current one.
+    /// The associated behavior is available so that communication channels, for
+    /// example, can be accessed by the side-effect. Additionally, the
+    /// latest state given any previous effect having emitted an event,
+    /// or else the state at the outset of the effects being applied,
+    /// is also available.
+    fn and_then<F, R>(self, f: F) -> And<B, Self, Then<B, F, R>>
+    where
+        Self: Sized,
+        B::State: Send + Sync,
+        F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
+        R: Future<Output = Result>,
+    {
+        And {
+            _l: self,
+            _r: Then {
+                f: Some(f),
+                phantom: PhantomData,
+            },
+            phantom: PhantomData,
+        }
+    }
+
     /// Box the effect for the purposes of returning it.
     fn boxed(self) -> Box<dyn Effect<B>>
     where
