@@ -65,10 +65,6 @@ jobs:
       if: startsWith(github.event.ref, 'refs/tags/v')
       run: cargo publish --registry AKKA_RS -p akka-projection-rs-grpc
 
-    - name: Publish akka-projection-rs-storage
-      if: startsWith(github.event.ref, 'refs/tags/v')
-      run: cargo publish --registry AKKA_RS -p akka-projection-rs-storage
-
   documentation:
     if: github.event.repository.fork == false
     name: Documentation
