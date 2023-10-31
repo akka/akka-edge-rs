@@ -41,7 +41,7 @@ where
     ) -> Result;
 }
 
-/// An effect to chain one effect with another.
+/// The return type of [EffectExt::and].
 pub struct And<E, L, R> {
     _l: L,
     _r: R,
@@ -122,8 +122,7 @@ where
     }
 }
 
-// EmitEvent
-
+/// The return type of [emit_event] and [emit_deletion_event].
 pub struct EmitEvent<B>
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
@@ -209,8 +208,7 @@ where
     }
 }
 
-// Reply
-
+/// The return type of [reply].
 pub struct Reply<B, T> {
     replier: Option<(oneshot::Sender<T>, T)>,
     phantom: PhantomData<B>,
@@ -258,8 +256,7 @@ pub fn reply<B, T>(reply_to: oneshot::Sender<T>, reply: T) -> Reply<B, T> {
     }
 }
 
-// Then
-
+/// The return type of [then].
 pub struct Then<B, F, R> {
     f: Option<F>,
     phantom: PhantomData<(B, R)>,
@@ -319,8 +316,7 @@ where
     }
 }
 
-// Unhandled
-
+/// The return type of [unhandled].
 pub struct Unhandled<E> {
     phantom: PhantomData<E>,
 }
