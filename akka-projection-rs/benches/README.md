@@ -4,7 +4,7 @@ Benchmarking
 To invoke a benchmark:
 
 ```
-cd akka-projection-rs-storage
+cd akka-projection-rs
 cargo bench
 ```
 

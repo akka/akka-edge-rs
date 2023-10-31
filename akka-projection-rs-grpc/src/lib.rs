@@ -1,9 +1,16 @@
 #![doc = include_str!("../README.md")]
 
-use akka_persistence_rs::{EntityId, Offset, PersistenceId, Tag, TimestampOffset, WithOffset};
+use akka_persistence_rs::{
+    EntityId, Offset, PersistenceId, Source, Tag, TimestampOffset, WithOffset, WithPersistenceId,
+    WithSeqNr, WithSource, WithTimestamp,
+};
 use akka_projection_rs::consumer_filter::{
     ComparableRegex, EntityIdOffset, FilterCriteria, TopicMatcher,
 };
+use bytes::Bytes;
+use chrono::TimeZone;
+use chrono::{DateTime, NaiveDateTime, Utc};
+use prost::Message;
 use regex::Regex;
 use smol_str::SmolStr;
 
@@ -15,14 +22,42 @@ pub mod producer;
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventEnvelope<E> {
     pub persistence_id: PersistenceId,
+    pub timestamp: DateTime<Utc>,
     pub seq_nr: u64,
+    pub source: Source,
     pub event: Option<E>,
-    pub offset: TimestampOffset,
+}
+
+impl<E> WithPersistenceId for EventEnvelope<E> {
+    fn persistence_id(&self) -> &PersistenceId {
+        &self.persistence_id
+    }
 }
 
 impl<E> WithOffset for EventEnvelope<E> {
     fn offset(&self) -> Offset {
-        Offset::Timestamp(self.offset.clone())
+        Offset::Timestamp(TimestampOffset {
+            timestamp: self.timestamp,
+            seq_nr: self.seq_nr,
+        })
+    }
+}
+
+impl<E> WithSeqNr for EventEnvelope<E> {
+    fn seq_nr(&self) -> u64 {
+        self.seq_nr
+    }
+}
+
+impl<E> WithSource for EventEnvelope<E> {
+    fn source(&self) -> Source {
+        self.source.clone()
+    }
+}
+
+impl<E> WithTimestamp for EventEnvelope<E> {
+    fn timestamp(&self) -> &DateTime<Utc> {
+        &self.timestamp
     }
 }
 
@@ -251,5 +286,59 @@ impl TryFrom<proto::FilterCriteria> for FilterCriteria {
             }
             None => Err(NoMessage),
         }
+    }
+}
+
+/// Declares a gRPC event cannot be mapped to an event envelope.
+pub struct BadEvent;
+
+impl<E> TryFrom<proto::Event> for EventEnvelope<E>
+where
+    E: Default + Message,
+{
+    type Error = BadEvent;
+
+    fn try_from(proto_event: proto::Event) -> Result<Self, Self::Error> {
+        let persistence_id = proto_event
+            .persistence_id
+            .parse::<PersistenceId>()
+            .map_err(|_| BadEvent)?;
+
+        let event = if let Some(payload) = proto_event.payload {
+            if !payload.type_url.starts_with("type.googleapis.com/") {
+                return Err(BadEvent);
+            }
+            let event = E::decode(Bytes::from(payload.value)).map_err(|_| BadEvent)?;
+            Some(event)
+        } else {
+            None
+        };
+
+        let Some(offset) = proto_event.offset else {
+            return Err(BadEvent);
+        };
+
+        let Some(timestamp) = offset.timestamp else {
+            return Err(BadEvent);
+        };
+
+        let Some(timestamp) =
+            NaiveDateTime::from_timestamp_opt(timestamp.seconds, timestamp.nanos as u32)
+        else {
+            return Err(BadEvent);
+        };
+        let timestamp = Utc.from_utc_datetime(&timestamp);
+
+        let seq_nr = proto_event.seq_nr as u64;
+
+        let source = proto_event.source.parse::<Source>().map_err(|_| BadEvent)?;
+
+        Ok(EventEnvelope {
+            persistence_id,
+            timestamp,
+            seq_nr,
+            source,
+            event,
+        })
     }
 }

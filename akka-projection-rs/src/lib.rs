@@ -2,10 +2,12 @@
 
 use std::{future::Future, marker::PhantomData, pin::Pin};
 
-use akka_persistence_rs::Offset;
+use akka_persistence_rs::PersistenceId;
 use async_trait::async_trait;
+use offset_store::LastOffset;
 use tokio_stream::Stream;
 
+pub mod consumer;
 pub mod consumer_filter;
 pub mod offset_store;
 
@@ -199,10 +201,18 @@ pub trait SourceProvider {
 
     /// Given a closure that returns an offset, source envelopes.
     async fn source<F, FR>(
-        &mut self,
+        &self,
         offset: F,
     ) -> Pin<Box<dyn Stream<Item = Self::Envelope> + Send + 'async_trait>>
     where
         F: Fn() -> FR + Send + Sync,
-        FR: Future<Output = Option<Offset>> + Send;
+        FR: Future<Output = Option<LastOffset>> + Send;
+
+    /// Load a single event on demand. A None is returned if the event for the
+    /// given `persistence_id` and `seq_nr` doesn't exist.
+    async fn load_envelope(
+        &self,
+        persistence_id: PersistenceId,
+        seq_nr: u64,
+    ) -> Option<Self::Envelope>;
 }

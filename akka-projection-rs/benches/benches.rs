@@ -1,27 +1,46 @@
-use std::{
-    collections::HashMap, future::Future, path::PathBuf, pin::Pin, sync::Arc, time::Duration,
-};
+use std::{future::Future, pin::Pin, sync::Arc};
 
-use akka_persistence_rs::{Offset, WithOffset};
-use akka_projection_rs::{Handler, HandlerError, SourceProvider};
+use akka_persistence_rs::{
+    EntityId, EntityType, Offset, PersistenceId, WithOffset, WithPersistenceId, WithSeqNr,
+    WithSource,
+};
+use akka_projection_rs::{
+    consumer, offset_store::LastOffset, Handler, HandlerError, SourceProvider,
+};
 use async_stream::stream;
 use async_trait::async_trait;
 use criterion::{criterion_group, criterion_main, Criterion};
-use streambed::secret_store::{
-    AppRoleAuthReply, Error, GetSecretReply, SecretData, SecretStore, UserPassAuthReply,
-};
-use tokio::sync::{oneshot, Notify};
+use tokio::sync::{mpsc, oneshot, Notify};
 use tokio_stream::Stream;
 
 const NUM_EVENTS: usize = 10_000;
 
 struct TestEnvelope {
+    persistence_id: PersistenceId,
     offset: u64,
+}
+
+impl WithPersistenceId for TestEnvelope {
+    fn persistence_id(&self) -> &PersistenceId {
+        &self.persistence_id
+    }
 }
 
 impl WithOffset for TestEnvelope {
     fn offset(&self) -> Offset {
         Offset::Sequence(self.offset)
+    }
+}
+
+impl WithSource for TestEnvelope {
+    fn source(&self) -> akka_persistence_rs::Source {
+        todo!()
+    }
+}
+
+impl WithSeqNr for TestEnvelope {
+    fn seq_nr(&self) -> u64 {
+        0
     }
 }
 
@@ -32,19 +51,32 @@ impl SourceProvider for TestSourceProvider {
     type Envelope = TestEnvelope;
 
     async fn source<F, FR>(
-        &mut self,
+        &self,
         offset: F,
     ) -> Pin<Box<dyn Stream<Item = Self::Envelope> + Send + 'async_trait>>
     where
         F: Fn() -> FR + Send + Sync,
-        FR: Future<Output = Option<Offset>> + Send,
+        FR: Future<Output = Option<LastOffset>> + Send,
     {
+        let persistence_id =
+            PersistenceId::new(EntityType::from("entity-type"), EntityId::from("entity-id"));
         let _ = offset().await;
         Box::pin(stream!(loop {
             for offset in 0..NUM_EVENTS as u64 {
-                yield TestEnvelope { offset };
+                yield TestEnvelope {
+                    persistence_id: persistence_id.clone(),
+                    offset,
+                };
             }
         }))
+    }
+
+    async fn load_envelope(
+        &self,
+        _persistence_id: PersistenceId,
+        _sequence_nr: u64,
+    ) -> Option<Self::Envelope> {
+        None
     }
 }
 
@@ -66,62 +98,6 @@ impl Handler for TestHandler {
     }
 }
 
-#[derive(Clone)]
-struct NoopSecretStore;
-
-#[async_trait]
-impl SecretStore for NoopSecretStore {
-    async fn approle_auth(
-        &self,
-        _role_id: &str,
-        _secret_id: &str,
-    ) -> Result<AppRoleAuthReply, Error> {
-        panic!("should not be called")
-    }
-
-    async fn create_secret(
-        &self,
-        _secret_path: &str,
-        _secret_data: SecretData,
-    ) -> Result<(), Error> {
-        panic!("should not be called")
-    }
-
-    async fn get_secret(&self, _secret_path: &str) -> Result<Option<GetSecretReply>, Error> {
-        let mut data = HashMap::new();
-        data.insert(
-            "value".to_string(),
-            "ed31e94c161aea6ff2300c72b17741f71b616463f294dac0542324bbdbf8a2de".to_string(),
-        );
-
-        Ok(Some(GetSecretReply {
-            lease_duration: 10,
-            data: SecretData { data },
-        }))
-    }
-
-    async fn token_auth(&self, _token: &str) -> Result<(), Error> {
-        panic!("should not be called")
-    }
-
-    async fn userpass_auth(
-        &self,
-        _username: &str,
-        _password: &str,
-    ) -> Result<UserPassAuthReply, Error> {
-        panic!("should not be called")
-    }
-
-    async fn userpass_create_update_user(
-        &self,
-        _current_username: &str,
-        _username: &str,
-        _password: &str,
-    ) -> Result<(), Error> {
-        panic!("should not be called")
-    }
-}
-
 fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("project events", move |b| {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -135,18 +111,14 @@ fn criterion_benchmark(c: &mut Criterion) {
 
         let task_events_processed = events_processed.clone();
         let _ = rt.spawn(async move {
-            let storage_path = PathBuf::from("/dev/null");
-
-            akka_projection_rs_storage::run(
-                &NoopSecretStore,
-                &"some-secret-path",
-                &storage_path,
+            let (offset_store, _) = mpsc::channel(1);
+            consumer::run(
+                offset_store,
                 registration_projection_command_receiver,
                 TestSourceProvider,
                 TestHandler {
                     events_processed: task_events_processed,
                 },
-                Duration::from_secs(1), // Not testing out fs performance
             )
             .await
         });

@@ -11,6 +11,7 @@ use chrono::Utc;
 use log::debug;
 use log::warn;
 use lru::LruCache;
+use std::hash::BuildHasher;
 use std::io;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
@@ -78,12 +79,43 @@ pub trait Handler<E> {
     async fn process(&mut self, envelope: EventEnvelope<E>) -> io::Result<EventEnvelope<E>>;
 }
 
-/// An opaque type internal to the library. The type records the public and private
-/// state of an entity in the context of the entity manager and friends.
+// An opaque type internal to the library. The type records the public and private
+// state of an entity in the context of the entity manager and friends.
 #[derive(Default)]
-pub struct EntityStatus<S> {
+struct EntityStatus<S> {
     pub(crate) state: S,
     pub(crate) last_seq_nr: u64,
+}
+
+/// An internal structure for the purposes of operating on the cache of entities.
+pub trait EntityOps<B>
+where
+    B: EventSourcedBehavior,
+{
+    fn get(&mut self, entity_id: &EntityId) -> Option<&B::State>;
+    fn update(&mut self, envelope: EventEnvelope<B::Event>) -> u64;
+}
+
+struct EntityLruCache<A, S>
+where
+    S: BuildHasher,
+{
+    cache: LruCache<EntityId, EntityStatus<A>, S>,
+}
+
+impl<B, S> EntityOps<B> for EntityLruCache<B::State, S>
+where
+    B: EventSourcedBehavior + Send + Sync + 'static,
+    B::State: Default,
+    S: BuildHasher,
+{
+    fn get(&mut self, entity_id: &EntityId) -> Option<&<B as EventSourcedBehavior>::State> {
+        self.cache.get(entity_id).map(|status| &status.state)
+    }
+
+    fn update(&mut self, envelope: EventEnvelope<<B as EventSourcedBehavior>::Event>) -> u64 {
+        update_entity::<B, S>(&mut self.cache, envelope)
+    }
 }
 
 /// Manages the lifecycle of entities given a specific behavior.
@@ -96,8 +128,8 @@ pub struct EntityStatus<S> {
 /// in turn, perform side effects and yield events.
 pub async fn run<A, B>(
     behavior: B,
-    mut adapter: A,
-    mut receiver: Receiver<Message<B::Command>>,
+    adapter: A,
+    receiver: Receiver<Message<B::Command>>,
     capacity: NonZeroUsize,
 ) -> io::Result<()>
 where
@@ -106,18 +138,55 @@ where
     B::State: Send + Sync,
     A: SourceProvider<B::Event> + Handler<B::Event> + Send + 'static,
 {
+    run_with_hasher(
+        behavior,
+        adapter,
+        receiver,
+        capacity,
+        lru::DefaultHasher::default(),
+    )
+    .await
+}
+
+/// Manages the lifecycle of entities given a specific behavior.
+/// Entity managers are established given a source of events associated
+/// with an entity type. That source is consumed by subsequently telling
+/// the entity manager to run, generally on its own task.
+///
+/// Commands are sent to a channel established for the entity manager.
+/// Effects may be produced as a result of performing a command, which may,
+/// in turn, perform side effects and yield events.
+///
+/// A hasher for entity ids can also be supplied which will be used to control the
+/// internal caching of entities.
+pub async fn run_with_hasher<A, B, S>(
+    behavior: B,
+    mut adapter: A,
+    mut receiver: Receiver<Message<B::Command>>,
+    capacity: NonZeroUsize,
+    hash_builder: S,
+) -> io::Result<()>
+where
+    B: EventSourcedBehavior + Send + Sync + 'static,
+    B::Command: Send,
+    B::State: Send + Sync,
+    A: SourceProvider<B::Event> + Handler<B::Event> + Send + 'static,
+    S: BuildHasher + Send + Sync,
+{
     // Source our initial events and populate our internal entities map.
 
-    let mut entities = LruCache::new(capacity);
+    let mut entities = EntityLruCache {
+        cache: LruCache::with_hasher(capacity, hash_builder),
+    };
 
     let envelopes = adapter.source_initial().await?;
 
     {
         tokio::pin!(envelopes);
         while let Some(envelope) = envelopes.next().await {
-            update_entity::<B>(&mut entities, envelope);
+            update_entity::<B, S>(&mut entities.cache, envelope);
         }
-        for (entity_id, entity_status) in entities.iter() {
+        for (entity_id, entity_status) in entities.cache.iter() {
             let context = Context { entity_id };
             behavior
                 .on_recovery_completed(&context, &entity_status.state)
@@ -130,16 +199,16 @@ where
     while let Some(message) = receiver.recv().await {
         // Source entity if we don't have it.
 
-        let mut entity_status = entities.get(&message.entity_id);
+        let mut entity_status = entities.cache.get(&message.entity_id);
 
         if entity_status.is_none() {
             let envelopes = adapter.source(&message.entity_id).await?;
 
             tokio::pin!(envelopes);
             while let Some(envelope) = envelopes.next().await {
-                update_entity::<B>(&mut entities, envelope);
+                update_entity::<B, S>(&mut entities.cache, envelope);
             }
-            entity_status = entities.get(&message.entity_id);
+            entity_status = entities.cache.get(&message.entity_id);
             let context = Context {
                 entity_id: &message.entity_id,
             };
@@ -177,7 +246,6 @@ where
                 context.entity_id,
                 &mut last_seq_nr,
                 Ok(()),
-                &mut |entities, envelope| update_entity::<B>(entities, envelope),
             )
             .await;
         if result.is_err() {
@@ -185,20 +253,21 @@ where
                 "An error occurred when processing an effect for {}. Result: {result:?} Evicting it.",
                 context.entity_id
             );
-            entities.pop(context.entity_id);
+            entities.cache.pop(context.entity_id);
         }
     }
 
     Ok(())
 }
 
-fn update_entity<B>(
-    entities: &mut LruCache<EntityId, EntityStatus<B::State>>,
+fn update_entity<B, S>(
+    entities: &mut LruCache<EntityId, EntityStatus<B::State>, S>,
     envelope: EventEnvelope<B::Event>,
 ) -> u64
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
     B::State: Default,
+    S: BuildHasher,
 {
     if !envelope.deletion_event {
         // Apply an event to state, creating the entity entry if necessary.
