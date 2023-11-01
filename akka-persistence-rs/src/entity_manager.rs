@@ -2,7 +2,7 @@
 //! an entity type. One EntityManager per entity type.
 //! The EntityManager will generally instantiate the entities on demand, i.e. when first
 //! message is sent to a specific entity. It will passivate least used
-//! entites to have a bounded number of entities in memory.
+//! entities to have a bounded number of entities in memory.
 //! The entities will recover their state from a stream of events.
 
 use async_trait::async_trait;
