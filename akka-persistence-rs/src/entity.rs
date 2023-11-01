@@ -51,4 +51,8 @@ pub trait EventSourcedBehavior {
     /// Any required side effects should be performed once recovery has completed by
     /// overriding this method.
     async fn on_recovery_completed(&self, _context: &Context, _state: &Self::State) {}
+
+    /// Called when the entity manager has completed initially recoverying entities,
+    /// even if there are no initial entities.
+    async fn on_initial_recovery_completed(&self) {}
 }

@@ -11,13 +11,17 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
-use std::cmp::Ordering;
+use std::{cmp::Ordering, sync::Arc};
 use std::{io, num::NonZeroUsize};
 use streambed::commit_log::{ConsumerRecord, Header, HeaderKey, Key, ProducerRecord, Topic};
 use streambed_logged::{compaction::KeyBasedRetention, FileLog};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch, Notify};
 
 mod internal {
+    use std::sync::Arc;
+
+    use tokio::sync::Notify;
+
     use super::*;
 
     #[derive(Clone, Default)]
@@ -46,6 +50,7 @@ mod internal {
 
     pub struct Behavior {
         pub last_offset: watch::Sender<Option<LastOffset>>,
+        pub ready: Arc<Notify>,
     }
 
     const HASH_COLLISION_WARNING_THRESHOLD: usize = 10;
@@ -58,52 +63,52 @@ mod internal {
             persistence_id: PersistenceId,
         ) {
             self.last_offset.send_if_modified(|last_offset| {
-            if let Some(state) = state {
-                let state_offset = state.offsets.iter().find_map(|(pid, offset)| {
-                    if pid == &persistence_id {
-                        Some(offset.clone())
-                    } else {
-                        None
-                    }
-                });
+                if let Some(state) = state {
+                    let state_offset = state.offsets.iter().find_map(|(pid, offset)| {
+                        if pid == &persistence_id {
+                            Some(offset.clone())
+                        } else {
+                            None
+                        }
+                    });
 
-                match (state_offset, last_offset) {
-                    (Some(state_offset), Some((pids, last_offset))) => {
-                        match state_offset.partial_cmp(last_offset) {
-                            Some(Ordering::Equal) => {
-                                if !pids.contains(&persistence_id) {
-                                    let pids_len = pids.len();
-                                    if pids_len < HASH_COLLISION_WARNING_THRESHOLD {
-                                        pids.push(persistence_id);
-                                        true
+                    match (state_offset, last_offset) {
+                        (Some(state_offset), Some((pids, last_offset))) => {
+                            match state_offset.partial_cmp(last_offset) {
+                                Some(Ordering::Equal) => {
+                                    if !pids.contains(&persistence_id) {
+                                        let pids_len = pids.len();
+                                        if pids_len < HASH_COLLISION_WARNING_THRESHOLD {
+                                            pids.push(persistence_id);
+                                            true
+                                        } else {
+                                            log::warn!("Exceeded hash collision threshold with {pids_len} entities sharing the same timestamp for the latest offset. Discarding {persistence_id} from here.");
+                                            false
+                                        }
                                     } else {
-                                        log::warn!("Exceeded hash collision threshold with {pids_len} entities sharing the same timestamp for the latest offset. Discarding {persistence_id} from here.");
                                         false
                                     }
-                                } else {
-                                    false
                                 }
+                                Some(Ordering::Greater) => {
+                                    *pids = vec![persistence_id];
+                                    *last_offset = state_offset;
+                                    true
+                                }
+                                Some(Ordering::Less) => false,
+                                None => false,
                             }
-                            Some(Ordering::Greater) => {
-                                *pids = vec![persistence_id];
-                                *last_offset = state_offset;
-                                true
-                            }
-                            Some(Ordering::Less) => false,
-                            None => false,
+                        }
+                        (None, None) => false,
+                        (None, Some(_)) => false,
+                        (Some(state_offset), last_offset @ None) => {
+                            *last_offset = Some((vec![persistence_id], state_offset));
+                            true
                         }
                     }
-                    (None, None) => false,
-                    (None, Some(_)) => false,
-                    (Some(state_offset), last_offset @ None) => {
-                        *last_offset = Some((vec![persistence_id], state_offset));
-                        true
-                    }
+                } else {
+                    false
                 }
-            } else {
-                false
-            }
-        });
+            });
         }
     }
 
@@ -171,10 +176,14 @@ mod internal {
             }
         }
 
-        async fn on_recovery_completed(&self, context: &Context, state: &Self::State) {
-            if let Ok(persistence_id) = context.entity_id.to_string().parse::<PersistenceId>() {
-                self.update_last_offset(Some(state), persistence_id);
+        async fn on_recovery_completed(&self, _context: &Context, state: &Self::State) {
+            for (persistence_id, _) in state.offsets.iter() {
+                self.update_last_offset(Some(state), persistence_id.clone());
             }
+        }
+
+        async fn on_initial_recovery_completed(&self) {
+            self.ready.notify_one();
         }
     }
 
@@ -264,12 +273,16 @@ pub async fn run(
     let events_topic = Topic::from(offset_store_id.clone());
 
     let (offset_store_entities, offset_store_entities_receiver) = mpsc::channel(keys_expected);
-    let (last_offset, last_offset_reeciver) = watch::channel(None);
+    let (last_offset, last_offset_receiver) = watch::channel(None);
+    let ready = Arc::new(Notify::new());
+    let task_ready = ready.clone();
     let offset_command_handler = async {
+        task_ready.notified().await;
+        task_ready.notify_one();
         while let Some(command) = offset_store_receiver.recv().await {
             match command {
                 offset_store::Command::GetLastOffset { reply_to } => {
-                    let _ = reply_to.send(last_offset_reeciver.borrow().clone());
+                    let _ = reply_to.send(last_offset_receiver.borrow().clone());
                 }
                 offset_store::Command::GetOffset {
                     persistence_id,
@@ -324,7 +337,7 @@ pub async fn run(
     );
 
     let entity_manager_runner = entity_manager::run(
-        Behavior { last_offset },
+        Behavior { last_offset, ready },
         file_log_topic_adapter,
         offset_store_entities_receiver,
         NonZeroUsize::new(keys_expected).unwrap(),
