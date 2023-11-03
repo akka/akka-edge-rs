@@ -192,6 +192,7 @@ where
                 .on_recovery_completed(&context, &entity_status.state)
                 .await;
         }
+        behavior.on_initial_recovery_completed().await;
     }
 
     // Receive commands for the entities and process them.
