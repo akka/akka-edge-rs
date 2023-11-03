@@ -5,7 +5,7 @@ use akka_persistence_rs::{
     entity::{Context, EventSourcedBehavior},
     entity_manager, EntityId, EntityType, Message, Offset, PersistenceId,
 };
-use akka_persistence_rs_commitlog::{CommitLogMarshaler, CommitLogTopicAdapter, EventEnvelope};
+use akka_persistence_rs_commitlog::{CommitLogMarshaller, CommitLogTopicAdapter, EventEnvelope};
 use akka_projection_rs::offset_store::{self, LastOffset};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -187,13 +187,13 @@ mod internal {
         }
     }
 
-    pub struct OffsetStoreEventMarshaler<F> {
+    pub struct OffsetStoreEventMarshaller<F> {
         pub entity_type: EntityType,
         pub to_compaction_key: F,
     }
 
     #[async_trait]
-    impl<F> CommitLogMarshaler<Event> for OffsetStoreEventMarshaler<F>
+    impl<F> CommitLogMarshaller<Event> for OffsetStoreEventMarshaller<F>
     where
         F: Fn(&EntityId, &Event) -> Option<Key> + Send + Sync,
     {
@@ -328,7 +328,7 @@ pub async fn run(
 
     let file_log_topic_adapter = CommitLogTopicAdapter::new(
         commit_log,
-        OffsetStoreEventMarshaler {
+        OffsetStoreEventMarshaller {
             entity_type: events_entity_type,
             to_compaction_key,
         },

@@ -72,11 +72,11 @@ impl<E> WithTimestamp for EventEnvelope<E> {
 /// Provides the ability to transform the the memory representation of Akka Persistence events from
 /// and to the records that a CommitLog expects.
 #[async_trait]
-pub trait CommitLogMarshaler<E>
+pub trait CommitLogMarshaller<E>
 where
     for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
-    /// Declares the entity type to the marshaler.
+    /// Declares the entity type to the marshaller.
     fn entity_type(&self) -> EntityType;
 
     /// Provide a key we can use for the purposes of log compaction.
@@ -109,7 +109,7 @@ where
 /// and to the records that a CommitLog expects. Given the "cbor" feature, we use CBOR for serialization.
 /// Encryption/decryption to commit log records is also applied. Therefore a secret store is expected.
 #[async_trait]
-pub trait EncryptedCommitLogMarshaler<E>: CommitLogMarshaler<E>
+pub trait EncryptedCommitLogMarshaller<E>: CommitLogMarshaller<E>
 where
     for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
@@ -236,12 +236,12 @@ where
 pub struct CommitLogTopicAdapter<CL, E, M>
 where
     CL: CommitLog,
-    M: CommitLogMarshaler<E>,
+    M: CommitLogMarshaller<E>,
     for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
     commit_log: CL,
     consumer_group_name: String,
-    marshaler: M,
+    marshaller: M,
     topic: Topic,
     phantom: PhantomData<E>,
 }
@@ -249,14 +249,14 @@ where
 impl<CL, E, M> CommitLogTopicAdapter<CL, E, M>
 where
     CL: CommitLog,
-    M: CommitLogMarshaler<E>,
+    M: CommitLogMarshaller<E>,
     for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
-    pub fn new(commit_log: CL, marshaler: M, consumer_group_name: &str, topic: Topic) -> Self {
+    pub fn new(commit_log: CL, marshaller: M, consumer_group_name: &str, topic: Topic) -> Self {
         Self {
             commit_log,
             consumer_group_name: consumer_group_name.into(),
-            marshaler,
+            marshaller,
             topic,
             phantom: PhantomData,
         }
@@ -267,7 +267,7 @@ where
 impl<CL, E, M> SourceProvider<E> for CommitLogTopicAdapter<CL, E, M>
 where
     CL: CommitLog,
-    M: CommitLogMarshaler<E> + Send + Sync,
+    M: CommitLogMarshaller<E> + Send + Sync,
     for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
     async fn source_initial(
@@ -281,14 +281,14 @@ where
         )
         .await;
 
-        let marshaler = &self.marshaler;
+        let marshaller = &self.marshaller;
 
         if let Ok(mut consumer_records) = consumer_records {
             Ok(Box::pin(stream!({
                 while let Some(consumer_record) = consumer_records.next().await {
-                    if let Some(record_entity_id) = marshaler.to_entity_id(&consumer_record) {
+                    if let Some(record_entity_id) = marshaller.to_entity_id(&consumer_record) {
                         if let Some(envelope) =
-                            marshaler.envelope(record_entity_id, consumer_record).await
+                            marshaller.envelope(record_entity_id, consumer_record).await
                         {
                             yield EntityManagerEventEnvelope::new(
                                 envelope.persistence_id.entity_id,
@@ -317,15 +317,15 @@ where
         )
         .await;
 
-        let marshaler = &self.marshaler;
+        let marshaller = &self.marshaller;
 
         if let Ok(mut consumer_records) = consumer_records {
             Ok(Box::pin(stream!({
                 while let Some(consumer_record) = consumer_records.next().await {
-                    if let Some(record_entity_id) = marshaler.to_entity_id(&consumer_record) {
+                    if let Some(record_entity_id) = marshaller.to_entity_id(&consumer_record) {
                         if &record_entity_id == entity_id {
                             if let Some(envelope) =
-                                marshaler.envelope(record_entity_id, consumer_record).await
+                                marshaller.envelope(record_entity_id, consumer_record).await
                             {
                                 yield EntityManagerEventEnvelope::new(
                                     envelope.persistence_id.entity_id,
@@ -381,7 +381,7 @@ async fn produce_to_last_offset<'async_trait>(
 impl<CL, E, M> Handler<E> for CommitLogTopicAdapter<CL, E, M>
 where
     CL: CommitLog,
-    M: CommitLogMarshaler<E> + Send + Sync,
+    M: CommitLogMarshaller<E> + Send + Sync,
     for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
     async fn process(
@@ -389,7 +389,7 @@ where
         envelope: EntityManagerEventEnvelope<E>,
     ) -> io::Result<EntityManagerEventEnvelope<E>> {
         let producer_record = self
-            .marshaler
+            .marshaller
             .producer_record(
                 self.topic.clone(),
                 envelope.entity_id.clone(),
@@ -462,20 +462,20 @@ mod tests {
         }
     }
 
-    // Developers are expected to provide a marshaler of events.
-    // The marshaler is responsible for more than just the serialization
+    // Developers are expected to provide a marshaller of events.
+    // The marshaller is responsible for more than just the serialization
     // of an envelope. Extracting/saving an entity id and determining other
     // metadata is also important. We would also expect to see any encryption
-    // and decyption being performed by the marshaler.
-    // The example here overrides the default methods of the marshaler and
+    // and decyption being performed by the marshaller.
+    // The example here overrides the default methods of the marshaller and
     // effectively ignores the use of a secret key; just to prove that you really
     // can lay out an envelope any way that you would like to. Note that secret keys
     // are important though.
 
-    struct MyEventMarshaler;
+    struct MyEventMarshaller;
 
     #[async_trait]
-    impl CommitLogMarshaler<MyEvent> for MyEventMarshaler {
+    impl CommitLogMarshaller<MyEvent> for MyEventMarshaller {
         fn entity_type(&self) -> EntityType {
             EntityType::from("some-entity-type")
         }
@@ -543,10 +543,10 @@ mod tests {
 
         let commit_log = FileLog::new(logged_dir);
 
-        let marshaler = MyEventMarshaler;
+        let marshaller = MyEventMarshaller;
         let mut adapter = CommitLogTopicAdapter::new(
             commit_log.clone(),
-            marshaler,
+            marshaller,
             "some-consumer",
             Topic::from("some-topic"),
         );
@@ -640,11 +640,11 @@ mod tests {
     async fn can_establish_an_entity_manager() {
         let commit_log = FileLog::new("/dev/null");
 
-        let marshaler = MyEventMarshaler;
+        let marshaller = MyEventMarshaller;
 
         let file_log_topic_adapter = CommitLogTopicAdapter::new(
             commit_log,
-            marshaler,
+            marshaller,
             "some-consumer",
             Topic::from("some-topic"),
         );

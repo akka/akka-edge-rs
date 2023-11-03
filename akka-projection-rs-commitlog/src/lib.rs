@@ -5,7 +5,7 @@ pub mod offset_store;
 use std::{future::Future, marker::PhantomData, ops::Range, pin::Pin};
 
 use akka_persistence_rs::{Offset, PersistenceId};
-use akka_persistence_rs_commitlog::{CommitLogMarshaler, EventEnvelope};
+use akka_persistence_rs_commitlog::{CommitLogMarshaller, EventEnvelope};
 use akka_projection_rs::{offset_store::LastOffset, SourceProvider};
 use async_stream::stream;
 use async_trait::async_trait;
@@ -17,7 +17,7 @@ use tokio_stream::{Stream, StreamExt};
 pub struct CommitLogSourceProvider<CL, E, M> {
     commit_log: CL,
     consumer_group_name: String,
-    marshaler: M,
+    marshaller: M,
     slice_range: Range<u32>,
     topic: Topic,
     phantom: PhantomData<E>,
@@ -26,10 +26,10 @@ pub struct CommitLogSourceProvider<CL, E, M> {
 impl<CL, E, M> CommitLogSourceProvider<CL, E, M>
 where
     CL: CommitLog,
-    M: CommitLogMarshaler<E> + Sync,
+    M: CommitLogMarshaller<E> + Sync,
     for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
-    pub fn new(commit_log: CL, marshaler: M, consumer_group_name: &str, topic: Topic) -> Self {
+    pub fn new(commit_log: CL, marshaller: M, consumer_group_name: &str, topic: Topic) -> Self {
         // When it comes to having a projection sourced from a local
         // commit log, there's little benefit if having many of them.
         // We therefore manage all slices from just one projection.
@@ -37,7 +37,7 @@ where
 
         Self::with_slice_range(
             commit_log,
-            marshaler,
+            marshaller,
             consumer_group_name,
             topic,
             slice_range.get(0).cloned().unwrap(),
@@ -46,7 +46,7 @@ where
 
     pub fn with_slice_range(
         commit_log: CL,
-        marshaler: M,
+        marshaller: M,
         consumer_group_name: &str,
         topic: Topic,
         slice_range: Range<u32>,
@@ -54,7 +54,7 @@ where
         Self {
             commit_log,
             consumer_group_name: consumer_group_name.into(),
-            marshaler,
+            marshaller,
             slice_range,
             topic,
             phantom: PhantomData,
@@ -86,15 +86,15 @@ where
             None,
         );
 
-        let marshaler = &self.marshaler;
+        let marshaller = &self.marshaller;
 
         Box::pin(stream!({
             while let Some(consumer_record) = records.next().await {
-                if let Some(record_entity_id) = marshaler.to_entity_id(&consumer_record) {
+                if let Some(record_entity_id) = marshaller.to_entity_id(&consumer_record) {
                     let persistence_id =
-                        PersistenceId::new(marshaler.entity_type(), record_entity_id);
+                        PersistenceId::new(marshaller.entity_type(), record_entity_id);
                     if self.slice_range.contains(&persistence_id.slice()) {
-                        if let Some(envelope) = marshaler
+                        if let Some(envelope) = marshaller
                             .envelope(persistence_id.entity_id, consumer_record)
                             .await
                         {
@@ -111,7 +111,7 @@ where
 impl<CL, E, M> SourceProvider for CommitLogSourceProvider<CL, E, M>
 where
     CL: CommitLog,
-    M: CommitLogMarshaler<E> + Send + Sync,
+    M: CommitLogMarshaller<E> + Send + Sync,
     for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
 {
     type Envelope = EventEnvelope<E>;
@@ -157,20 +157,20 @@ mod tests {
         value: String,
     }
 
-    // Developers are expected to provide a marshaler of events.
-    // The marshaler is responsible for more than just the serialization
+    // Developers are expected to provide a marshaller of events.
+    // The marshaller is responsible for more than just the serialization
     // of an envelope. Extracting/saving an entity id and determining other
     // metadata is also important. We would also expect to see any encryption
-    // and decyption being performed by the marshaler.
-    // The example here overrides the default methods of the marshaler and
+    // and decyption being performed by the marshaller.
+    // The example here overrides the default methods of the marshaller and
     // effectively ignores the use of a secret key; just to prove that you really
     // can lay out an envelope any way that you would like to. Note that secret keys
     // are important though.
 
-    struct MyEventMarshaler;
+    struct MyEventMarshaller;
 
     #[async_trait]
-    impl CommitLogMarshaler<MyEvent> for MyEventMarshaler {
+    impl CommitLogMarshaller<MyEvent> for MyEventMarshaller {
         fn entity_type(&self) -> EntityType {
             EntityType::from("some-topic")
         }
@@ -264,7 +264,7 @@ mod tests {
 
         let source_provider = CommitLogSourceProvider::new(
             commit_log.clone(),
-            MyEventMarshaler,
+            MyEventMarshaller,
             "some-consumer",
             topic,
         );

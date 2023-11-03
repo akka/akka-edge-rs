@@ -180,10 +180,10 @@ where
                         let mut stream_outs = response.into_inner();
                         while let Some(stream_out) = stream_outs.next().await {
                             if let Ok(proto::StreamOut{ message: Some(proto::stream_out::Message::Event(streamed_event)) }) = stream_out {
-                                // Marshal and abort if we can't.
+                                // Marshall and abort if we can't.
 
                                 let Ok(envelope) = streamed_event.try_into() else {
-                                    warn!("Cannot marshal envelope. Aborting stream.");
+                                    warn!("Cannot marshall envelope. Aborting stream.");
                                     break
                                 };
 
@@ -222,7 +222,7 @@ where
                         Some(envelope)
                     } else {
                         warn!(
-                            "Cannot marshal envelope for: {}. Aborting stream.",
+                            "Cannot marshall envelope for: {}. Aborting stream.",
                             persistence_id
                         );
                         None
