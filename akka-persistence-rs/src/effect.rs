@@ -3,6 +3,7 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
+use std::result::Result as StdResult;
 use std::{future::Future, io, marker::PhantomData};
 use tokio::sync::oneshot;
 
@@ -18,7 +19,7 @@ pub enum Error {
     IoError(io::Error),
 }
 
-pub type Result = std::result::Result<(), Error>;
+pub type Result = StdResult<(), Error>;
 
 /// The trait that effect types implement.
 #[async_trait]
@@ -136,6 +137,69 @@ where
         }
     }
 
+    /// An effect to emit an event. The latest state given any previous effect
+    /// having emitted an event, or else the state at the outset of the effects
+    /// being applied, is also available.
+    fn and_then_emit_event<F, R>(self, f: F) -> And<B, Self, ThenEmitEvent<B, F, R>>
+    where
+        Self: Sized,
+        B::State: Send + Sync,
+        F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
+        R: Future<Output = StdResult<Option<B::Event>, Error>> + Send,
+    {
+        And {
+            _l: self,
+            _r: ThenEmitEvent {
+                deletion_event: false,
+                f: Some(f),
+                phantom: PhantomData,
+            },
+            phantom: PhantomData,
+        }
+    }
+
+    /// An effect to emit a deletion event. The latest state given any previous effect
+    /// having emitted an event, or else the state at the outset of the effects
+    /// being applied, is also available.
+    fn and_then_emit_deletion_event<F, R>(self, f: F) -> And<B, Self, ThenEmitEvent<B, F, R>>
+    where
+        Self: Sized,
+        B::State: Send + Sync,
+        F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
+        R: Future<Output = StdResult<Option<B::Event>, Error>> + Send,
+    {
+        And {
+            _l: self,
+            _r: ThenEmitEvent {
+                deletion_event: true,
+                f: Some(f),
+                phantom: PhantomData,
+            },
+            phantom: PhantomData,
+        }
+    }
+
+    /// An effect to reply an envelope. The latest state given any previous effect
+    /// having emitted an event, or else the state at the outset of the effects
+    /// being applied, is also available.
+    fn and_then_reply<F, R, T>(self, f: F) -> And<B, Self, ThenReply<B, F, R, T>>
+    where
+        Self: Sized,
+        B::State: Send + Sync,
+        F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
+        R: Future<Output = StdResult<Option<(oneshot::Sender<T>, T)>, Error>> + Send,
+        T: Send,
+    {
+        And {
+            _l: self,
+            _r: ThenReply {
+                f: Some(f),
+                phantom: PhantomData,
+            },
+            phantom: PhantomData,
+        }
+    }
+
     /// Box the effect for the purposes of returning it.
     fn boxed(self) -> Box<dyn Effect<B>>
     where
@@ -148,7 +212,7 @@ where
 /// The return type of [emit_event] and [emit_deletion_event].
 pub struct EmitEvent<B>
 where
-    B: EventSourcedBehavior + Send + Sync + 'static,
+    B: EventSourcedBehavior,
 {
     deletion_event: bool,
     event: Option<B::Event>,
@@ -215,8 +279,6 @@ where
         event: Some(event),
     }
 }
-
-// EmitDeletionEvent
 
 /// An effect to emit an event upon having successfully handed it off to
 /// be persisted. The event will be flagged to represent the deletion of
@@ -337,6 +399,118 @@ where
         f: Some(f),
         phantom: PhantomData,
     }
+}
+
+/// The return type of [EffectExt::and_then_emit_event] and  [EffectExt::and_then_emit_deletion_event].
+pub struct ThenEmitEvent<B, F, R>
+where
+    B: EventSourcedBehavior,
+{
+    deletion_event: bool,
+    f: Option<F>,
+    phantom: PhantomData<(B, R)>,
+}
+
+#[async_trait]
+impl<B, F, R> Effect<B> for ThenEmitEvent<B, F, R>
+where
+    B: EventSourcedBehavior + Send + Sync + 'static,
+    B::State: Send + Sync,
+    B::Event: Send,
+    F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
+    R: Future<Output = StdResult<Option<B::Event>, Error>> + Send,
+{
+    async fn process(
+        &mut self,
+        behavior: &B,
+        handler: &mut (dyn Handler<B::Event> + Send),
+        entities: &mut (dyn EntityOps<B> + Send + Sync),
+        entity_id: &EntityId,
+        last_seq_nr: &mut u64,
+        prev_result: Result,
+    ) -> Result {
+        let f = self.f.take();
+        if let Some(f) = f {
+            let result = f(behavior, entities.get(entity_id), prev_result).await;
+            if let Ok(event) = result {
+                let mut effect = EmitEvent::<B> {
+                    deletion_event: self.deletion_event,
+                    event,
+                };
+                effect
+                    .process(behavior, handler, entities, entity_id, last_seq_nr, Ok(()))
+                    .await
+            } else {
+                result.map(|_| ())
+            }
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl<B, F, R> EffectExt<B> for ThenEmitEvent<B, F, R>
+where
+    B: EventSourcedBehavior + Send + Sync + 'static,
+    B::State: Send + Sync,
+    B::Event: Send,
+    F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
+    R: Future<Output = StdResult<Option<B::Event>, Error>> + Send,
+{
+}
+
+/// The return type of [EffectExt::and_then_reply].
+pub struct ThenReply<B, F, R, T> {
+    f: Option<F>,
+    phantom: PhantomData<(B, R, T)>,
+}
+
+#[async_trait]
+impl<B, F, R, T> Effect<B> for ThenReply<B, F, R, T>
+where
+    B: EventSourcedBehavior + Send + Sync + 'static,
+    B::State: Send + Sync,
+    F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
+    R: Future<Output = StdResult<Option<(oneshot::Sender<T>, T)>, Error>> + Send,
+    T: Send,
+{
+    async fn process(
+        &mut self,
+        behavior: &B,
+        handler: &mut (dyn Handler<B::Event> + Send),
+        entities: &mut (dyn EntityOps<B> + Send + Sync),
+        entity_id: &EntityId,
+        last_seq_nr: &mut u64,
+        prev_result: Result,
+    ) -> Result {
+        let f = self.f.take();
+        if let Some(f) = f {
+            let result = f(behavior, entities.get(entity_id), prev_result).await;
+            if let Ok(replier) = result {
+                let mut effect = Reply {
+                    replier,
+                    phantom: PhantomData,
+                };
+                effect
+                    .process(behavior, handler, entities, entity_id, last_seq_nr, Ok(()))
+                    .await
+            } else {
+                Ok(())
+            }
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl<B, F, R, T> EffectExt<B> for ThenReply<B, F, R, T>
+where
+    B: EventSourcedBehavior + Send + Sync + 'static,
+    B::State: Send + Sync,
+    F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
+    R: Future<Output = StdResult<Option<(oneshot::Sender<T>, T)>, Error>> + Send,
+    T: Send,
+{
 }
 
 /// The return type of [unhandled].
