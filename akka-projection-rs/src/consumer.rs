@@ -244,12 +244,12 @@ mod tests {
         value: String,
     }
 
-    // Developers are expected to provide a marshaler of events.
-    // The marshaler is responsible for more than just the serialization
+    // Developers are expected to provide a marshaller of events.
+    // The marshaller is responsible for more than just the serialization
     // of an envelope. Extracting/saving an entity id and determining other
     // metadata is also important. We would also expect to see any encryption
-    // and decyption being performed by the marshaler.
-    // The example here overrides the default methods of the marshaler and
+    // and decyption being performed by the marshaller.
+    // The example here overrides the default methods of the marshaller and
     // effectively ignores the use of a secret key; just to prove that you really
     // can lay out an envelope any way that you would like to. Note that secret keys
     // are important though.
