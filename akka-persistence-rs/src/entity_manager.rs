@@ -451,10 +451,10 @@ mod tests {
                 .send(envelope.clone())
                 .await
                 .map(|_| envelope)
-                .map_err(|_| {
+                .map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::Other,
-                        "A problem occurred processing an envelope",
+                        format!("A problem occurred processing an envelope: {e:?}"),
                     )
                 })
         }
