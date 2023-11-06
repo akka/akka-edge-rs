@@ -7,6 +7,7 @@ use akka_projection_rs::SourceProvider;
 use async_stream::stream;
 use async_trait::async_trait;
 use chrono::Timelike;
+use log::debug;
 use log::warn;
 use prost::Message;
 use prost_types::Timestamp;
@@ -179,17 +180,29 @@ where
                     if let Ok(response) = result {
                         let mut stream_outs = response.into_inner();
                         while let Some(stream_out) = stream_outs.next().await {
-                            if let Ok(proto::StreamOut{ message: Some(proto::stream_out::Message::Event(streamed_event)) }) = stream_out {
-                                // Marshall and abort if we can't.
+                            match stream_out {
+                                Ok(proto::StreamOut{ message }) => match message {
+                                    Some(proto::stream_out::Message::Event(streamed_event)) => {
+                                        // Marshall and abort if we can't.
 
-                                let Ok(envelope) = streamed_event.try_into() else {
-                                    warn!("Cannot marshall envelope. Aborting stream.");
-                                    break
-                                };
+                                        let Ok(envelope) = streamed_event.try_into() else {
+                                            warn!("Cannot marshall envelope. Aborting stream.");
+                                            break
+                                        };
 
-                                // All is well, so emit the event.
+                                        // All is well, so emit the event.
 
-                                yield envelope;
+                                        yield envelope;
+                                    }
+
+                                    Some(proto::stream_out::Message::FilteredEvent(_)) | None => ()
+                                }
+
+                                Err(e) => {
+                                    // Debug level because connection errors are normal.
+                                    debug!("Error encountered while consuming events: {e:?}. Aborting.");
+                                    break;
+                                }
                             }
                         }
                     }
