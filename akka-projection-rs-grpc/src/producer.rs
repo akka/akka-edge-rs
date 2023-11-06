@@ -277,21 +277,29 @@ pub async fn run<E, EC, ECR>(
 
                 loop {
                     tokio::select! {
-                        Some(Ok(proto::ConsumeEventOut {
-                            message: Some(message),
-                        })) = stream_outs.next() => match message {
-                            proto::consume_event_out::Message::Start(proto::ConsumerEventStart { filter }) => {
-                                debug!("Starting the protocol");
-                                let _ = consumer_filters.send(
-                                    filter
-                                        .into_iter()
-                                        .flat_map(|f| f.try_into())
-                                        .collect(),
-                                );
-                                break;
+                        stream_out = stream_outs.next() => match stream_out {
+                            Some(Ok(proto::ConsumeEventOut { message })) =>
+                                match message {
+                                    Some(proto::consume_event_out::Message::Start(proto::ConsumerEventStart { filter })) => {
+                                        debug!("Starting the protocol");
+                                        let _ = consumer_filters.send(
+                                            filter
+                                                .into_iter()
+                                                .flat_map(|f| f.try_into())
+                                                .collect(),
+                                        );
+                                        break;
+                                    }
+                                    _ => {
+                                        warn!("Received a message before starting the protocol - ignoring event");
+                                    }
+                            },
+                            Some(Err(e)) => {
+                                warn!("Encountered an error while waiting to start the protocol: {e:?}");
+                                continue 'outer;
                             }
-                            _ => {
-                                warn!("Received a message before starting the protocol - ignoring event");
+                            None => {
+                                continue 'outer;
                             }
                         },
 
@@ -328,28 +336,41 @@ pub async fn run<E, EC, ECR>(
                             }
                         }
 
-                        Some(Ok(proto::ConsumeEventOut {
-                            message: Some(message),
-                        })) = stream_outs.next() => match message {
-                            proto::consume_event_out::Message::Start(proto::ConsumerEventStart { .. }) => {
-                                warn!("Received a protocol start when already started - ignoring");
-                            }
-                            proto::consume_event_out::Message::Ack(proto::ConsumerEventAck { persistence_id, seq_nr }) => {
-                                if let Ok(persistence_id) = persistence_id.parse() {
-                                    if let Some(contexts) = in_flight.get_mut(&persistence_id) {
-                                        let seq_nr = seq_nr as u64;
-                                        while let Some((envelope, reply_to)) = contexts.pop_front() {
-                                            if seq_nr == envelope.seq_nr && reply_to.send(()).is_ok() {
-                                                break;
+                        stream_out = stream_outs.next() => match stream_out {
+                            Some(Ok(proto::ConsumeEventOut { message })) => match message {
+                                Some(proto::consume_event_out::Message::Start(proto::ConsumerEventStart { .. })) => {
+                                    warn!("Received a protocol start when already started - ignoring");
+                                }
+                                Some(proto::consume_event_out::Message::Ack(proto::ConsumerEventAck { persistence_id, seq_nr })) => {
+                                    if let Ok(persistence_id) = persistence_id.parse() {
+                                        if let Some(contexts) = in_flight.get_mut(&persistence_id) {
+                                            let seq_nr = seq_nr as u64;
+                                            while let Some((envelope, reply_to)) = contexts.pop_front() {
+                                                if seq_nr == envelope.seq_nr && reply_to.send(()).is_ok() {
+                                                    break;
+                                                }
+                                            }
+                                            if contexts.is_empty() {
+                                                in_flight.remove(&persistence_id);
                                             }
                                         }
-                                        if contexts.is_empty() {
-                                            in_flight.remove(&persistence_id);
-                                        }
+                                    } else {
+                                        warn!("Received an event but could not parse the persistence id - ignoring event");
                                     }
-                                } else {
-                                    warn!("Received an event but could not parse the persistence id - ignoring event");
                                 }
+                                None => {
+                                    warn!("Received an empty message while consuming replies - ignoring event");
+                                }
+                            }
+
+                            Some(Err(e)) => {
+                                // Debug level because connection errors are normal.
+                                debug!("Encountered an error while consuming replies: {e:?}");
+                                continue 'outer;
+                            }
+
+                            None => {
+                                continue 'outer;
                             }
                         },
 
@@ -357,8 +378,6 @@ pub async fn run<E, EC, ECR>(
                             debug!("gRPC producer killed.");
                             break 'outer
                         }
-
-                        else => break
                     }
                 }
             }
