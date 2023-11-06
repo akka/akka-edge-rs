@@ -216,7 +216,7 @@ where
         entity_id: EntityId,
         seq_nr: u64,
         timestamp: DateTime<Utc>,
-        event: E,
+        event: &E,
     ) -> Option<ProducerRecord>;
 }
 
@@ -414,6 +414,119 @@ where
                     "A problem occurred producing a envelope",
                 )
             })
+    }
+}
+
+#[cfg(feature = "cbor")]
+pub mod cbor {
+    use super::*;
+
+    pub struct Marshaller<E, F, SS> {
+        pub entity_type: EntityType,
+        pub events_key_secret_path: Arc<str>,
+        pub to_record_type: F,
+        pub secret_store: SS,
+        phantom: PhantomData<E>,
+    }
+
+    // Our event keys will occupy the top 12 bits of the key, meaning
+    // that we can have 4K types of event. We use 32 of the bottom 52
+    // bits as the entity id. We choose 32 bits as this is a common size
+    // for identifiers transmitted from IoT sensors. These identifiers
+    // are also known as "device addresses" and represent an address
+    // which may, in turn, equate to a 64 bit address globally unique
+    // to a device. These globally unique addresses are not generally
+    // transmitted in order to conserve packet size.
+    const EVENT_TYPE_BIT_SHIFT: usize = 52;
+    const EVENT_ID_BIT_MASK: u64 = 0xFFFFFFFF;
+
+    #[async_trait]
+    impl<E, F, SS> CommitLogMarshaller<E> for Marshaller<E, F, SS>
+    where
+        for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
+        F: Fn(&E) -> Option<u32> + Sync,
+        SS: SecretStore,
+    {
+        fn entity_type(&self) -> EntityType {
+            self.entity_type.clone()
+        }
+
+        fn to_compaction_key(&self, entity_id: &EntityId, event: &E) -> Option<Key> {
+            let record_type = (self.to_record_type)(event);
+            record_type.and_then(|record_type| {
+                let entity_id = entity_id.parse::<u32>().ok()?;
+                Some((record_type as u64) << EVENT_TYPE_BIT_SHIFT | entity_id as u64)
+            })
+        }
+
+        fn to_entity_id(&self, record: &ConsumerRecord) -> Option<EntityId> {
+            let entity_id = (record.key & EVENT_ID_BIT_MASK) as u32;
+            let mut buffer = itoa::Buffer::new();
+            Some(EntityId::from(buffer.format(entity_id)))
+        }
+
+        async fn envelope(
+            &self,
+            entity_id: EntityId,
+            record: ConsumerRecord,
+        ) -> Option<EventEnvelope<E>> {
+            self.decrypted_envelope(entity_id, record).await
+        }
+
+        async fn producer_record(
+            &self,
+            topic: Topic,
+            entity_id: EntityId,
+            seq_nr: u64,
+            timestamp: DateTime<Utc>,
+            event: &E,
+        ) -> Option<ProducerRecord> {
+            self.encrypted_producer_record(topic, entity_id, seq_nr, timestamp, event)
+                .await
+        }
+    }
+
+    #[async_trait]
+    impl<E, F, SS> EncryptedCommitLogMarshaller<E> for Marshaller<E, F, SS>
+    where
+        for<'async_trait> E: DeserializeOwned + Serialize + Send + Sync + 'async_trait,
+        F: Fn(&E) -> Option<u32> + Sync,
+        SS: SecretStore,
+    {
+        type SecretStore = SS;
+
+        fn secret_store(&self) -> &Self::SecretStore {
+            &self.secret_store
+        }
+
+        fn secret_path(&self, _entity_id: &EntityId) -> Arc<str> {
+            self.events_key_secret_path.clone()
+        }
+    }
+
+    /// Provides a marshaller that conveniently uses CBOR for serialization and
+    /// a supplied secret store for encryption. Entity identifiers are also
+    /// required to be numeric. These characteristics are reasonable when using
+    /// the Streambed commit log at the edge.
+    pub fn marshaller<E, F, S, SS>(
+        entity_type: EntityType,
+        events_key_secret_path: S,
+        secret_store: SS,
+        to_record_type: F,
+    ) -> Marshaller<E, F, SS>
+    where
+        for<'a> E: DeserializeOwned + Serialize + Send + Sync + 'a,
+        F: Fn(&E) -> Option<u32> + Sync,
+        SS: SecretStore,
+        S: ToString,
+    {
+        Marshaller {
+            entity_type,
+            events_key_secret_path: Arc::from(events_key_secret_path.to_string()),
+            to_record_type,
+            secret_store,
+            phantom: PhantomData,
+        }
     }
 }
 
