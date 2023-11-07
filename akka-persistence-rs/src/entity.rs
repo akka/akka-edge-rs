@@ -35,6 +35,8 @@ pub trait EventSourcedBehavior {
     /// State can also be associated with the behavior so that other effects can be
     /// performed. For example, a behavior might be created with a channel sender
     /// so that data can be sent as an effect of performing a command.
+    /// Effects can be chained and are guaranteed to be applied in their entirety
+    /// before the next command for their entity id is processed.
     fn for_command(
         context: &Context,
         state: &Self::State,

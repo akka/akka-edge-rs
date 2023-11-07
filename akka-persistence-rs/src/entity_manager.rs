@@ -303,7 +303,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{io, pin::Pin, sync::Arc};
+    use std::{future, io, pin::Pin, sync::Arc};
 
     use super::*;
     use crate::{
@@ -378,13 +378,11 @@ mod tests {
                         .and_then(|behavior: &Self, new_state, prev_result| {
                             let updated = behavior.updated.clone();
                             let temp = new_state.map_or(0, |s| s.temp);
-                            async move {
-                                if prev_result.is_ok() {
-                                    updated.notify_one();
-                                    println!("Updated with {}!", temp);
-                                }
-                                prev_result
+                            if prev_result.is_ok() {
+                                updated.notify_one();
+                                println!("Updated with {}!", temp);
                             }
+                            future::ready(prev_result)
                         })
                         .boxed()
                 }

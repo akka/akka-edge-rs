@@ -1,5 +1,15 @@
 //! Effects that are lazily performed as a result of performing a command
-//! of an entity. Effects can be chained with other effects.
+//! of an entity. Effects can be chained with other effects and are guaranteed
+//! to be applied (run) before the next command for an entity id is processed.
+//!
+//! Convience methods are providing for commonly chained operations, and take
+//! the form of `and_then` as the prefix. By Rust convention, `and_then`
+//! provides the result of the previous operation and expects a result provided
+//! given some closure.
+//!
+//! In the case where there is no convenience method, a generalized `and`
+//! operation can be used to chain any effect found here, or a customized
+//! effect.
 
 use async_trait::async_trait;
 use chrono::Utc;
