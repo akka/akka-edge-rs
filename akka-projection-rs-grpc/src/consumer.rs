@@ -183,10 +183,10 @@ where
                             match stream_out {
                                 Ok(proto::StreamOut{ message }) => match message {
                                     Some(proto::stream_out::Message::Event(streamed_event)) => {
-                                        // Marshall and abort if we can't.
+                                        // Marshal and abort if we can't.
 
                                         let Ok(envelope) = streamed_event.try_into() else {
-                                            warn!("Cannot marshall envelope. Aborting stream.");
+                                            warn!("Cannot marshal envelope. Aborting stream.");
                                             break
                                         };
 
@@ -235,7 +235,7 @@ where
                         Some(envelope)
                     } else {
                         warn!(
-                            "Cannot marshall envelope for: {}. Aborting stream.",
+                            "Cannot marshal envelope for: {}. Aborting stream.",
                             persistence_id
                         );
                         None
