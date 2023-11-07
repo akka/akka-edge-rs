@@ -342,3 +342,46 @@ where
         })
     }
 }
+
+impl<E> TryFrom<proto::FilteredEvent> for EventEnvelope<E>
+where
+    E: Default + Message,
+{
+    type Error = BadEvent;
+
+    fn try_from(proto_event: proto::FilteredEvent) -> Result<Self, Self::Error> {
+        let persistence_id = proto_event
+            .persistence_id
+            .parse::<PersistenceId>()
+            .map_err(|_| BadEvent)?;
+
+        let event = None;
+
+        let Some(offset) = proto_event.offset else {
+            return Err(BadEvent);
+        };
+
+        let Some(timestamp) = offset.timestamp else {
+            return Err(BadEvent);
+        };
+
+        let Some(timestamp) =
+            NaiveDateTime::from_timestamp_opt(timestamp.seconds, timestamp.nanos as u32)
+        else {
+            return Err(BadEvent);
+        };
+        let timestamp = Utc.from_utc_datetime(&timestamp);
+
+        let seq_nr = proto_event.seq_nr as u64;
+
+        let source = proto_event.source.parse::<Source>().map_err(|_| BadEvent)?;
+
+        Ok(EventEnvelope {
+            persistence_id,
+            timestamp,
+            seq_nr,
+            source,
+            event,
+        })
+    }
+}

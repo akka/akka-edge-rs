@@ -195,7 +195,20 @@ where
                                         yield envelope;
                                     }
 
-                                    Some(proto::stream_out::Message::FilteredEvent(_)) | None => ()
+                                    Some(proto::stream_out::Message::FilteredEvent(streamed_event)) => {
+                                        // Marshal and abort if we can't.
+
+                                        let Ok(envelope) = streamed_event.try_into() else {
+                                            warn!("Cannot marshal envelope. Aborting stream.");
+                                            break
+                                        };
+
+                                        // All is well, so emit the event.
+
+                                        yield envelope;
+                                    }
+
+                                    None => ()
                                 }
 
                                 Err(e) => {
