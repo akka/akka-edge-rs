@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.1" # WHEN UPDATING THIS VERSION, UPDATE THE `akka-persistence-rs` VERSIONS BELOW
+version = "0.4.0" # WHEN UPDATING THIS VERSION, UPDATE THE `akka-persistence-rs` VERSIONS BELOW
 edition = "2021"
 rust-version = "1.70.0"
 license-file = "LICENSE"
@@ -64,9 +64,9 @@ yew = { version = "0.20" }
 
 # THE VERSIONS HERE SHOULD BE THE SAME AS PER `workspace.package.version`.
 
-akka-persistence-rs = { path = "akka-persistence-rs", version = "0.3.1", registry = "lightbend-akka-rs" }
-akka-persistence-rs-commitlog = { path = "akka-persistence-rs-commitlog", version = "0.3.1", registry = "lightbend-akka-rs" }
-akka-projection-rs = { path = "akka-projection-rs", version = "0.3.1", registry = "lightbend-akka-rs" }
+akka-persistence-rs = { path = "akka-persistence-rs", version = "0.4.0", registry = "lightbend-akka-rs" }
+akka-persistence-rs-commitlog = { path = "akka-persistence-rs-commitlog", version = "0.4.0", registry = "lightbend-akka-rs" }
+akka-projection-rs = { path = "akka-projection-rs", version = "0.4.0", registry = "lightbend-akka-rs" }
 
 [profile.bench-debug]
 inherits = "release"
