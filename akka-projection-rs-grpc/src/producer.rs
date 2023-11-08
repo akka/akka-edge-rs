@@ -284,6 +284,9 @@ pub async fn run<E, EC, ECR>(
                                 )),
                             };
                         }
+                        Envelope::SourceOnlyEventEnvelope(_) => {
+                            warn!("Producing a source-only event envelope is not supported. Dropped.");
+                        }
                     }
                 }
             });

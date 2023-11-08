@@ -28,6 +28,17 @@ pub struct EventEnvelope<E> {
     pub event: E,
 }
 
+/// An envelope type that wraps a gRPC event associated with a specific entity,
+/// but has no specific event field. These are used as control events and
+/// as represented by their [Self::source] field.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceOnlyEventEnvelope {
+    pub persistence_id: PersistenceId,
+    pub timestamp: DateTime<Utc>,
+    pub seq_nr: u64,
+    source: Source,
+}
+
 /// An envelope type that wraps a gRPC filtered event associated with a specific entity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FilteredEventEnvelope {
@@ -42,6 +53,7 @@ pub struct FilteredEventEnvelope {
 pub enum Envelope<E> {
     EventEnvelope(EventEnvelope<E>),
     FilteredEventEnvelope(FilteredEventEnvelope),
+    SourceOnlyEventEnvelope(SourceOnlyEventEnvelope),
 }
 
 impl<E> WithPersistenceId for Envelope<E> {
@@ -49,6 +61,7 @@ impl<E> WithPersistenceId for Envelope<E> {
         match self {
             Envelope::EventEnvelope(envelope) => &envelope.persistence_id,
             Envelope::FilteredEventEnvelope(envelope) => &envelope.persistence_id,
+            Envelope::SourceOnlyEventEnvelope(envelope) => &envelope.persistence_id,
         }
     }
 }
@@ -58,6 +71,7 @@ impl<E> WithOffset for Envelope<E> {
         let (timestamp, seq_nr) = match self {
             Envelope::EventEnvelope(envelope) => (envelope.timestamp, envelope.seq_nr),
             Envelope::FilteredEventEnvelope(envelope) => (envelope.timestamp, envelope.seq_nr),
+            Envelope::SourceOnlyEventEnvelope(envelope) => (envelope.timestamp, envelope.seq_nr),
         };
 
         Offset::Timestamp(TimestampOffset { timestamp, seq_nr })
@@ -69,6 +83,7 @@ impl<E> WithSeqNr for Envelope<E> {
         match self {
             Envelope::EventEnvelope(envelope) => envelope.seq_nr,
             Envelope::FilteredEventEnvelope(envelope) => envelope.seq_nr,
+            Envelope::SourceOnlyEventEnvelope(envelope) => envelope.seq_nr,
         }
     }
 }
@@ -78,6 +93,7 @@ impl<E> WithSource for Envelope<E> {
         match self {
             Envelope::EventEnvelope(envelope) => envelope.source,
             Envelope::FilteredEventEnvelope(envelope) => envelope.source,
+            Envelope::SourceOnlyEventEnvelope(envelope) => envelope.source,
         }
     }
 }
@@ -87,6 +103,7 @@ impl<E> WithTimestamp for Envelope<E> {
         match self {
             Envelope::EventEnvelope(envelope) => &envelope.timestamp,
             Envelope::FilteredEventEnvelope(envelope) => &envelope.timestamp,
+            Envelope::SourceOnlyEventEnvelope(envelope) => &envelope.timestamp,
         }
     }
 }
@@ -100,7 +117,9 @@ impl<E> TryFrom<Envelope<E>> for EventEnvelope<E> {
     fn try_from(value: Envelope<E>) -> Result<Self, Self::Error> {
         match value {
             Envelope::EventEnvelope(envelope) => Ok(envelope),
-            Envelope::FilteredEventEnvelope(_envelope) => Err(NotAnEventEnvelope),
+            Envelope::FilteredEventEnvelope(_) | Envelope::SourceOnlyEventEnvelope(_) => {
+                Err(NotAnEventEnvelope)
+            }
         }
     }
 }
@@ -352,9 +371,9 @@ where
             if !payload.type_url.starts_with("type.googleapis.com/") {
                 return Err(BadEvent);
             }
-            E::decode(Bytes::from(payload.value)).map_err(|_| BadEvent)?
+            Some(E::decode(Bytes::from(payload.value)).map_err(|_| BadEvent)?)
         } else {
-            return Err(BadEvent);
+            None
         };
 
         let Some(offset) = proto_event.offset else {
@@ -376,13 +395,24 @@ where
 
         let source = proto_event.source.parse::<Source>().map_err(|_| BadEvent)?;
 
-        Ok(Envelope::EventEnvelope(EventEnvelope {
-            persistence_id,
-            timestamp,
-            seq_nr,
-            source,
-            event,
-        }))
+        let envelope = if let Some(event) = event {
+            Envelope::EventEnvelope(EventEnvelope {
+                persistence_id,
+                timestamp,
+                seq_nr,
+                source,
+                event,
+            })
+        } else {
+            Envelope::SourceOnlyEventEnvelope(SourceOnlyEventEnvelope {
+                persistence_id,
+                timestamp,
+                seq_nr,
+                source,
+            })
+        };
+
+        Ok(envelope)
     }
 }
 
