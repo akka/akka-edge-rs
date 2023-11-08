@@ -28,50 +28,49 @@ pub struct EventEnvelope<E> {
     pub event: E,
 }
 
-/// An envelope type that wraps a gRPC event associated with a specific entity,
-/// but has no specific event field. These are used as control events and
-/// as represented by their [Self::source] field.
 #[derive(Clone, Debug, PartialEq)]
-pub struct SourceOnlyEventEnvelope {
+struct SourceOnlyEventEnvelope {
     pub persistence_id: PersistenceId,
     pub timestamp: DateTime<Utc>,
     pub seq_nr: u64,
     source: Source,
 }
 
-/// An envelope type that wraps a gRPC filtered event associated with a specific entity.
 #[derive(Clone, Debug, PartialEq)]
-pub struct FilteredEventEnvelope {
+struct FilteredEventEnvelope {
     pub persistence_id: PersistenceId,
     pub timestamp: DateTime<Utc>,
     pub seq_nr: u64,
     source: Source,
 }
 
-/// A composite envelope for gRPC events.
+/// An envelope for all types of gRPC events.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Envelope<E> {
-    EventEnvelope(EventEnvelope<E>),
-    FilteredEventEnvelope(FilteredEventEnvelope),
-    SourceOnlyEventEnvelope(SourceOnlyEventEnvelope),
+pub struct Envelope<E>(Envelopes<E>);
+
+#[derive(Clone, Debug, PartialEq)]
+enum Envelopes<E> {
+    Event(EventEnvelope<E>),
+    Filtered(FilteredEventEnvelope),
+    SourceOnly(SourceOnlyEventEnvelope),
 }
 
 impl<E> WithPersistenceId for Envelope<E> {
     fn persistence_id(&self) -> &PersistenceId {
-        match self {
-            Envelope::EventEnvelope(envelope) => &envelope.persistence_id,
-            Envelope::FilteredEventEnvelope(envelope) => &envelope.persistence_id,
-            Envelope::SourceOnlyEventEnvelope(envelope) => &envelope.persistence_id,
+        match &self.0 {
+            Envelopes::Event(envelope) => &envelope.persistence_id,
+            Envelopes::Filtered(envelope) => &envelope.persistence_id,
+            Envelopes::SourceOnly(envelope) => &envelope.persistence_id,
         }
     }
 }
 
 impl<E> WithOffset for Envelope<E> {
     fn offset(&self) -> Offset {
-        let (timestamp, seq_nr) = match self {
-            Envelope::EventEnvelope(envelope) => (envelope.timestamp, envelope.seq_nr),
-            Envelope::FilteredEventEnvelope(envelope) => (envelope.timestamp, envelope.seq_nr),
-            Envelope::SourceOnlyEventEnvelope(envelope) => (envelope.timestamp, envelope.seq_nr),
+        let (timestamp, seq_nr) = match &self.0 {
+            Envelopes::Event(envelope) => (envelope.timestamp, envelope.seq_nr),
+            Envelopes::Filtered(envelope) => (envelope.timestamp, envelope.seq_nr),
+            Envelopes::SourceOnly(envelope) => (envelope.timestamp, envelope.seq_nr),
         };
 
         Offset::Timestamp(TimestampOffset { timestamp, seq_nr })
@@ -80,30 +79,30 @@ impl<E> WithOffset for Envelope<E> {
 
 impl<E> WithSeqNr for Envelope<E> {
     fn seq_nr(&self) -> u64 {
-        match self {
-            Envelope::EventEnvelope(envelope) => envelope.seq_nr,
-            Envelope::FilteredEventEnvelope(envelope) => envelope.seq_nr,
-            Envelope::SourceOnlyEventEnvelope(envelope) => envelope.seq_nr,
+        match &self.0 {
+            Envelopes::Event(envelope) => envelope.seq_nr,
+            Envelopes::Filtered(envelope) => envelope.seq_nr,
+            Envelopes::SourceOnly(envelope) => envelope.seq_nr,
         }
     }
 }
 
 impl<E> WithSource for Envelope<E> {
     fn source(&self) -> Source {
-        match self {
-            Envelope::EventEnvelope(envelope) => envelope.source,
-            Envelope::FilteredEventEnvelope(envelope) => envelope.source,
-            Envelope::SourceOnlyEventEnvelope(envelope) => envelope.source,
+        match &self.0 {
+            Envelopes::Event(envelope) => envelope.source,
+            Envelopes::Filtered(envelope) => envelope.source,
+            Envelopes::SourceOnly(envelope) => envelope.source,
         }
     }
 }
 
 impl<E> WithTimestamp for Envelope<E> {
     fn timestamp(&self) -> &DateTime<Utc> {
-        match self {
-            Envelope::EventEnvelope(envelope) => &envelope.timestamp,
-            Envelope::FilteredEventEnvelope(envelope) => &envelope.timestamp,
-            Envelope::SourceOnlyEventEnvelope(envelope) => &envelope.timestamp,
+        match &self.0 {
+            Envelopes::Event(envelope) => &envelope.timestamp,
+            Envelopes::Filtered(envelope) => &envelope.timestamp,
+            Envelopes::SourceOnly(envelope) => &envelope.timestamp,
         }
     }
 }
@@ -115,11 +114,9 @@ impl<E> TryFrom<Envelope<E>> for EventEnvelope<E> {
     type Error = NotAnEventEnvelope;
 
     fn try_from(value: Envelope<E>) -> Result<Self, Self::Error> {
-        match value {
-            Envelope::EventEnvelope(envelope) => Ok(envelope),
-            Envelope::FilteredEventEnvelope(_) | Envelope::SourceOnlyEventEnvelope(_) => {
-                Err(NotAnEventEnvelope)
-            }
+        match value.0 {
+            Envelopes::Event(envelope) => Ok(envelope),
+            Envelopes::Filtered(_) | Envelopes::SourceOnly(_) => Err(NotAnEventEnvelope),
         }
     }
 }
@@ -396,7 +393,7 @@ where
         let source = proto_event.source.parse::<Source>().map_err(|_| BadEvent)?;
 
         let envelope = if let Some(event) = event {
-            Envelope::EventEnvelope(EventEnvelope {
+            Envelopes::Event(EventEnvelope {
                 persistence_id,
                 timestamp,
                 seq_nr,
@@ -404,7 +401,7 @@ where
                 event,
             })
         } else {
-            Envelope::SourceOnlyEventEnvelope(SourceOnlyEventEnvelope {
+            Envelopes::SourceOnly(SourceOnlyEventEnvelope {
                 persistence_id,
                 timestamp,
                 seq_nr,
@@ -412,7 +409,7 @@ where
             })
         };
 
-        Ok(envelope)
+        Ok(Envelope(envelope))
     }
 }
 
@@ -447,11 +444,11 @@ where
 
         let source = proto_event.source.parse::<Source>().map_err(|_| BadEvent)?;
 
-        Ok(Envelope::FilteredEventEnvelope(FilteredEventEnvelope {
+        Ok(Envelope(Envelopes::Filtered(FilteredEventEnvelope {
             persistence_id,
             timestamp,
             seq_nr,
             source,
-        }))
+        })))
     }
 }

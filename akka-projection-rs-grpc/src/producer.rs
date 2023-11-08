@@ -35,6 +35,7 @@ use tonic::Request;
 use crate::delayer::Delayer;
 use crate::proto;
 use crate::Envelope;
+use crate::Envelopes;
 use crate::EventEnvelope;
 use crate::FilteredEventEnvelope;
 use crate::StreamId;
@@ -154,20 +155,20 @@ impl<E> GrpcEventFlow<E> {
         let (reply, reply_receiver) = oneshot::channel();
         let persistence_id = PersistenceId::new(self.entity_type.clone(), transformation.entity_id);
         let envelope = if let Some(event) = transformation.event {
-            Envelope::EventEnvelope(EventEnvelope {
+            Envelope(Envelopes::Event(EventEnvelope {
                 persistence_id,
                 timestamp: transformation.timestamp,
                 seq_nr: transformation.seq_nr,
                 source: transformation.source,
                 event,
-            })
+            }))
         } else {
-            Envelope::FilteredEventEnvelope(FilteredEventEnvelope {
+            Envelope(Envelopes::Filtered(FilteredEventEnvelope {
                 persistence_id,
                 timestamp: transformation.timestamp,
                 seq_nr: transformation.seq_nr,
                 source: transformation.source,
-            })
+            }))
         };
         self.grpc_producer
             .send((envelope, reply))
@@ -243,7 +244,7 @@ pub async fn run<E, EC, ECR>(
 
                 while let Some(envelope) = event_in_receiver.recv().await {
                     match envelope {
-                        Envelope::EventEnvelope(envelope) => {
+                        Envelope(Envelopes::Event(envelope)) => {
                             if let Ok(any) = Any::from_msg(&envelope.event) {
                                 let timestamp = prost_types::Timestamp {
                                     seconds: envelope.timestamp.timestamp(),
@@ -266,7 +267,7 @@ pub async fn run<E, EC, ECR>(
                                 };
                             }
                         }
-                        Envelope::FilteredEventEnvelope(envelope) => {
+                        Envelope(Envelopes::Filtered(envelope)) => {
                             let timestamp = prost_types::Timestamp {
                                 seconds: envelope.timestamp.timestamp(),
                                 nanos: envelope.timestamp.timestamp_nanos_opt().unwrap_or_default() as i32
@@ -284,7 +285,7 @@ pub async fn run<E, EC, ECR>(
                                 )),
                             };
                         }
-                        Envelope::SourceOnlyEventEnvelope(_) => {
+                        Envelope(Envelopes::SourceOnly(_)) => {
                             warn!("Producing a source-only event envelope is not supported. Dropped.");
                         }
                     }
@@ -519,7 +520,7 @@ mod tests {
         let (reply, reply_receiver) = oneshot::channel();
         assert!(sender
             .send((
-                Envelope::EventEnvelope(EventEnvelope {
+                Envelope(Envelopes::Event(EventEnvelope {
                     persistence_id: "entity-type|entity-id".parse().unwrap(),
                     timestamp: Utc::now(),
                     seq_nr: 1,
@@ -528,7 +529,7 @@ mod tests {
                         seconds: 0,
                         nanos: 0
                     },
-                }),
+                })),
                 reply,
             ))
             .await

@@ -277,7 +277,7 @@ where
 #[cfg(test)]
 mod tests {
 
-    use crate::{proto::load_event_response, EventEnvelope};
+    use crate::{proto::load_event_response, Envelopes, EventEnvelope};
 
     use super::*;
     use akka_persistence_rs::{EntityId, EntityType, PersistenceId, Source};
@@ -494,13 +494,13 @@ mod tests {
 
             assert_eq!(
                 envelope,
-                Some(Envelope::EventEnvelope(EventEnvelope {
+                Some(Envelope(Envelopes::Event(EventEnvelope {
                     persistence_id,
                     timestamp: event_time,
                     seq_nr: 1,
                     source: Source::Regular,
                     event: 0xffffffff,
-                }))
+                })))
             );
 
             break;
