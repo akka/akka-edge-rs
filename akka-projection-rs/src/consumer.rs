@@ -23,17 +23,18 @@ struct StorableState {
 /// Provides at-least-once projections with storage for projection offsets,
 /// meaning, for multiple runs of a projection, it is possible for events to repeat
 /// from previous runs.
-pub async fn run<A, B, E, IH, SP>(
+pub async fn run<A, B, Envelope, EE, IH, SP>(
     offset_store: mpsc::Sender<offset_store::Command>,
     mut kill_switch: oneshot::Receiver<()>,
     source_provider: SP,
     handler: IH,
 ) where
-    A: Handler<Envelope = E> + Send,
-    B: PendingHandler<Envelope = E> + Send,
-    E: WithPersistenceId + WithOffset + WithSeqNr + WithSource + Send,
+    A: Handler<Envelope = EE> + Send,
+    B: PendingHandler<Envelope = EE> + Send,
+    EE: TryFrom<Envelope>,
+    Envelope: WithPersistenceId + WithOffset + WithSeqNr + WithSource + Send,
     IH: Into<Handlers<A, B>>,
-    SP: SourceProvider<Envelope = E>,
+    SP: SourceProvider<Envelope = Envelope>,
 {
     let mut handler = handler.into();
 
@@ -52,7 +53,7 @@ pub async fn run<A, B, E, IH, SP>(
             })
             .await;
 
-        let mut always_pending_source: Pin<Box<dyn Stream<Item = E> + Send>> =
+        let mut always_pending_source: Pin<Box<dyn Stream<Item = Envelope> + Send>> =
             Box::pin(stream::pending());
 
         let mut active_source = &mut source;
@@ -130,24 +131,36 @@ pub async fn run<A, B, E, IH, SP>(
 
                         match &mut handler {
                             Handlers::Ready(handler, _) => {
-                                if handler.process(envelope).await.is_err()
-                                    || offset_store
-                                        .send(offset_store::Command::SaveOffset { persistence_id, offset })
-                                        .await
-                                        .is_err()
+                                if let Ok(event_envelope) = envelope.try_into() {
+                                    if handler.process(event_envelope).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                if offset_store
+                                    .send(offset_store::Command::SaveOffset { persistence_id, offset })
+                                    .await
+                                    .is_err()
                                 {
                                     break;
                                 }
-                                                }
+                            }
                             Handlers::Pending(handler, _) => {
-                                if let Ok(pending) = handler.process_pending(envelope).await {
-                                    handler_futures.push_back((pending, persistence_id, offset));
-                                    // If we've reached the limit on the pending futures in-flight
-                                    // then back off sourcing more.
-                                    if handler_futures.len() == B::MAX_PENDING {
-                                        active_source = &mut always_pending_source;
+                                if let Ok(event_envelope) = envelope.try_into() {
+                                    if let Ok(pending) = handler.process_pending(event_envelope).await {
+                                        handler_futures.push_back((pending, persistence_id, offset));
+                                        // If we've reached the limit on the pending futures in-flight
+                                        // then back off sourcing more.
+                                        if handler_futures.len() == B::MAX_PENDING {
+                                            active_source = &mut always_pending_source;
+                                        }
+                                    } else {
+                                        break;
                                     }
-                                } else {
+                                } else if offset_store
+                                    .send(offset_store::Command::SaveOffset { persistence_id, offset })
+                                    .await
+                                    .is_err()
+                                {
                                     break;
                                 }
                             }
@@ -229,7 +242,7 @@ mod tests {
 
     impl WithSource for TestEnvelope {
         fn source(&self) -> akka_persistence_rs::Source {
-            self.source.clone()
+            self.source
         }
     }
 

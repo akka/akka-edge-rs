@@ -172,13 +172,18 @@ pub trait WithOffset {
     fn offset(&self) -> Offset;
 }
 
+/// Implemented by structures that can return a timestamp.
+pub trait WithTimestamp {
+    fn timestamp(&self) -> &DateTime<Utc>;
+}
+
 /// Implemented by structures that can return a sequence number.
 pub trait WithSeqNr {
     fn seq_nr(&self) -> u64;
 }
 
 /// An event source descriptor
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Source {
     /// For backtracking events.
     Backtrack,
@@ -210,11 +215,6 @@ impl FromStr for Source {
 /// Implemented by structures that can return a source.
 pub trait WithSource {
     fn source(&self) -> Source;
-}
-
-/// Implemented by structures that can return a timestamp.
-pub trait WithTimestamp {
-    fn timestamp(&self) -> &DateTime<Utc>;
 }
 
 #[cfg(test)]

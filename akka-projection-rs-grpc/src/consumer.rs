@@ -20,7 +20,7 @@ use tonic::Request;
 
 use crate::delayer::Delayer;
 use crate::proto;
-use crate::EventEnvelope;
+use crate::Envelope;
 use crate::StreamId;
 
 pub struct GrpcSourceProvider<E, EP> {
@@ -76,7 +76,7 @@ where
     EP: Fn() -> EPR + Send + Sync,
     EPR: Future<Output = Result<Channel, tonic::transport::Error>> + Send,
 {
-    type Envelope = EventEnvelope<E>;
+    type Envelope = Envelope<E>;
 
     async fn source<F, FR>(
         &self,
@@ -277,7 +277,7 @@ where
 #[cfg(test)]
 mod tests {
 
-    use crate::proto::load_event_response;
+    use crate::{proto::load_event_response, EventEnvelope};
 
     use super::*;
     use akka_persistence_rs::{EntityId, EntityType, PersistenceId, Source};
@@ -494,13 +494,13 @@ mod tests {
 
             assert_eq!(
                 envelope,
-                Some(EventEnvelope {
+                Some(Envelope::EventEnvelope(EventEnvelope {
                     persistence_id,
                     timestamp: event_time,
                     seq_nr: 1,
                     source: Source::Regular,
-                    event: Some(0xffffffff),
-                })
+                    event: 0xffffffff,
+                }))
             );
 
             break;

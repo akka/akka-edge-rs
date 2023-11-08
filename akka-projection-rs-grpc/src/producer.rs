@@ -34,7 +34,9 @@ use tonic::Request;
 
 use crate::delayer::Delayer;
 use crate::proto;
+use crate::Envelope;
 use crate::EventEnvelope;
+use crate::FilteredEventEnvelope;
 use crate::StreamId;
 
 /// The result of a transformation function for the purposes of
@@ -59,14 +61,14 @@ pub struct GrpcEventProcessor<E, EI, PF, T> {
 }
 
 #[async_trait]
-impl<EI, E, PF, T> PendingHandler for GrpcEventProcessor<E, EI, PF, T>
+impl<Envelope, E, PF, T> PendingHandler for GrpcEventProcessor<E, Envelope, PF, T>
 where
-    EI: WithPersistenceId + WithSeqNr + WithSource + WithTags + WithTimestamp + Send,
+    Envelope: WithPersistenceId + WithSeqNr + WithSource + WithTags + WithTimestamp + Send,
     E: Send,
-    PF: Fn(&EI) -> bool + Send,
-    T: Fn(&EI) -> Option<E> + Send,
+    PF: Fn(&Envelope) -> bool + Send,
+    T: Fn(&Envelope) -> Option<E> + Send,
 {
-    type Envelope = EI;
+    type Envelope = Envelope;
 
     const MAX_PENDING: usize = 10;
 
@@ -107,13 +109,13 @@ where
 /// Transform and forward gRPC events given a user-supplied transformation function.
 pub struct GrpcEventFlow<E> {
     entity_type: EntityType,
-    grpc_producer: mpsc::Sender<(EventEnvelope<E>, oneshot::Sender<()>)>,
+    grpc_producer: mpsc::Sender<(Envelope<E>, oneshot::Sender<()>)>,
 }
 
 impl<E> GrpcEventFlow<E> {
     pub fn new(
         entity_type: EntityType,
-        grpc_producer: mpsc::Sender<(EventEnvelope<E>, oneshot::Sender<()>)>,
+        grpc_producer: mpsc::Sender<(Envelope<E>, oneshot::Sender<()>)>,
     ) -> Self {
         Self {
             entity_type,
@@ -151,17 +153,24 @@ impl<E> GrpcEventFlow<E> {
     ) -> Result<oneshot::Receiver<()>, HandlerError> {
         let (reply, reply_receiver) = oneshot::channel();
         let persistence_id = PersistenceId::new(self.entity_type.clone(), transformation.entity_id);
+        let envelope = if let Some(event) = transformation.event {
+            Envelope::EventEnvelope(EventEnvelope {
+                persistence_id,
+                timestamp: transformation.timestamp,
+                seq_nr: transformation.seq_nr,
+                source: transformation.source,
+                event,
+            })
+        } else {
+            Envelope::FilteredEventEnvelope(FilteredEventEnvelope {
+                persistence_id,
+                timestamp: transformation.timestamp,
+                seq_nr: transformation.seq_nr,
+                source: transformation.source,
+            })
+        };
         self.grpc_producer
-            .send((
-                EventEnvelope {
-                    persistence_id,
-                    timestamp: transformation.timestamp,
-                    seq_nr: transformation.seq_nr,
-                    source: transformation.source,
-                    event: transformation.event,
-                },
-                reply,
-            ))
+            .send((envelope, reply))
             .await
             .map_err(|_| HandlerError)?;
 
@@ -169,7 +178,7 @@ impl<E> GrpcEventFlow<E> {
     }
 }
 
-type Context<E> = (EventEnvelope<E>, oneshot::Sender<()>);
+type Context<E> = (Envelope<E>, oneshot::Sender<()>);
 
 /// Reliably stream event envelopes to a consumer. Event envelope transmission
 /// requests are sent over a channel and have a reply that is completed on the
@@ -179,7 +188,7 @@ pub async fn run<E, EC, ECR>(
     origin_id: StreamId,
     stream_id: StreamId,
     consumer_filters: watch::Sender<Vec<FilterCriteria>>,
-    mut envelopes: mpsc::Receiver<(EventEnvelope<E>, oneshot::Sender<()>)>,
+    mut envelopes: mpsc::Receiver<(Envelope<E>, oneshot::Sender<()>)>,
     mut kill_switch: oneshot::Receiver<()>,
 ) where
     E: Clone + Name + 'static,
@@ -218,7 +227,7 @@ pub async fn run<E, EC, ECR>(
             let origin_id = origin_id.to_string();
             let stream_id = stream_id.to_string();
 
-            let (event_in, mut event_in_receiver) = mpsc::unbounded_channel::<EventEnvelope<E>>();
+            let (event_in, mut event_in_receiver) = mpsc::unbounded_channel::<Envelope<E>>();
 
             let request = Request::new(stream! {
                 yield proto::ConsumeEventIn {
@@ -233,40 +242,48 @@ pub async fn run<E, EC, ECR>(
                 let ordinary_events_source = smol_str::SmolStr::from("");
 
                 while let Some(envelope) = event_in_receiver.recv().await {
-                    let timestamp = prost_types::Timestamp {
-                        seconds: envelope.timestamp().timestamp(),
-                        nanos: envelope.timestamp().timestamp_nanos_opt().unwrap_or_default() as i32
-                    };
+                    match envelope {
+                        Envelope::EventEnvelope(envelope) => {
+                            if let Ok(any) = Any::from_msg(&envelope.event) {
+                                let timestamp = prost_types::Timestamp {
+                                    seconds: envelope.timestamp.timestamp(),
+                                    nanos: envelope.timestamp.timestamp_nanos_opt().unwrap_or_default() as i32
+                                };
 
-                    if let Some(event) = envelope.event {
-                        if let Ok(any) = Any::from_msg(&event) {
+                                yield proto::ConsumeEventIn {
+                                    message: Some(proto::consume_event_in::Message::Event(
+                                        proto::Event {
+                                            persistence_id: envelope.persistence_id.to_string(),
+                                            seq_nr: envelope.seq_nr as i64,
+                                            slice: envelope.persistence_id.slice() as i32,
+                                            offset: Some(proto::Offset { timestamp: Some(timestamp), seen: vec![] }),
+                                            payload: Some(any),
+                                            source: ordinary_events_source.to_string(),
+                                            metadata: None,
+                                            tags: vec![]
+                                        },
+                                    )),
+                                };
+                            }
+                        }
+                        Envelope::FilteredEventEnvelope(envelope) => {
+                            let timestamp = prost_types::Timestamp {
+                                seconds: envelope.timestamp.timestamp(),
+                                nanos: envelope.timestamp.timestamp_nanos_opt().unwrap_or_default() as i32
+                            };
+
                             yield proto::ConsumeEventIn {
-                                message: Some(proto::consume_event_in::Message::Event(
-                                    proto::Event {
+                                message: Some(proto::consume_event_in::Message::FilteredEvent(
+                                    proto::FilteredEvent {
                                         persistence_id: envelope.persistence_id.to_string(),
                                         seq_nr: envelope.seq_nr as i64,
                                         slice: envelope.persistence_id.slice() as i32,
                                         offset: Some(proto::Offset { timestamp: Some(timestamp), seen: vec![] }),
-                                        payload: Some(any),
                                         source: ordinary_events_source.to_string(),
-                                        metadata: None,
-                                        tags: vec![]
                                     },
                                 )),
                             };
                         }
-                    } else {
-                        yield proto::ConsumeEventIn {
-                            message: Some(proto::consume_event_in::Message::FilteredEvent(
-                                proto::FilteredEvent {
-                                    persistence_id: envelope.persistence_id.to_string(),
-                                    seq_nr: envelope.seq_nr as i64,
-                                    slice: envelope.persistence_id.slice() as i32,
-                                    offset: Some(proto::Offset { timestamp: Some(timestamp), seen: vec![] }),
-                                    source: ordinary_events_source.to_string(),
-                                },
-                            )),
-                        };
                     }
                 }
             });
@@ -323,7 +340,7 @@ pub async fn run<E, EC, ECR>(
                         request = envelopes.recv() => {
                             if let Some((envelope, reply_to)) = request {
                                 let contexts = in_flight
-                                    .entry(envelope.persistence_id.clone())
+                                    .entry(envelope.persistence_id().clone())
                                     .or_default();
                                 contexts.push_back((envelope.clone(), reply_to));
 
@@ -346,7 +363,7 @@ pub async fn run<E, EC, ECR>(
                                         if let Some(contexts) = in_flight.get_mut(&persistence_id) {
                                             let seq_nr = seq_nr as u64;
                                             while let Some((envelope, reply_to)) = contexts.pop_front() {
-                                                if seq_nr == envelope.seq_nr && reply_to.send(()).is_ok() {
+                                                if seq_nr == envelope.seq_nr() && reply_to.send(()).is_ok() {
                                                     break;
                                                 }
                                             }
@@ -499,16 +516,16 @@ mod tests {
         let (reply, reply_receiver) = oneshot::channel();
         assert!(sender
             .send((
-                EventEnvelope {
+                Envelope::EventEnvelope(EventEnvelope {
                     persistence_id: "entity-type|entity-id".parse().unwrap(),
                     timestamp: Utc::now(),
                     seq_nr: 1,
                     source: Source::Regular,
-                    event: Some(prost_types::Duration {
+                    event: prost_types::Duration {
                         seconds: 0,
                         nanos: 0
-                    }),
-                },
+                    },
+                }),
                 reply,
             ))
             .await
