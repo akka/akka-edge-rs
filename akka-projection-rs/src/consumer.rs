@@ -145,25 +145,21 @@ pub async fn run<A, B, Envelope, EE, IH, SP>(
                                 }
                             }
                             Handlers::Pending(handler, _) => {
-                                if let Ok(event_envelope) = envelope.try_into() {
-                                    if let Ok(pending) = handler.process_pending(event_envelope).await {
-                                        handler_futures.push_back((pending, persistence_id, offset));
-                                        // If we've reached the limit on the pending futures in-flight
-                                        // then back off sourcing more.
-                                        if handler_futures.len() == B::MAX_PENDING {
-                                            active_source = &mut always_pending_source;
-                                        }
-                                    } else {
+                                let pending = if let Ok(event_envelope) = envelope.try_into() {
+                                    let Ok(pending) = handler.process_pending(event_envelope).await else {
                                         break;
-                                    }
-                                } else if offset_store
-                                    .send(offset_store::Command::SaveOffset { persistence_id, offset })
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
+                                    };
+                                    pending
+                                } else {
+                                    Box::pin(future::ready(Ok(())))
+                                };
+                                handler_futures.push_back((pending, persistence_id, offset));
+                                // If we've reached the limit on the pending futures in-flight
+                                // then back off sourcing more.
+                                if handler_futures.len() == B::MAX_PENDING {
+                                    active_source = &mut always_pending_source;
                                 }
-                            }
+                        }
                         }
                     } else {
                         break;
