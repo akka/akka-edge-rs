@@ -1,7 +1,7 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use akka_persistence_rs::{
-    EntityId, EntityType, Offset, PersistenceId, WithOffset, WithPersistenceId, WithSeqNr,
+    EntityId, EntityType, Offset, PersistenceId, Source, WithOffset, WithPersistenceId, WithSeqNr,
     WithSource,
 };
 use akka_projection_rs::{
@@ -34,7 +34,7 @@ impl WithOffset for TestEnvelope {
 
 impl WithSource for TestEnvelope {
     fn source(&self) -> akka_persistence_rs::Source {
-        todo!()
+        Source::Regular
     }
 }
 
@@ -111,16 +111,18 @@ fn criterion_benchmark(c: &mut Criterion) {
 
         let task_events_processed = events_processed.clone();
         let _ = rt.spawn(async move {
-            let (offset_store, _) = mpsc::channel(1);
-            consumer::run(
+            let (offset_store, mut offset_store_receiver) = mpsc::channel(1);
+            let offset_store_task =
+                async { while let Some(_) = offset_store_receiver.recv().await {} };
+            let projection_task = consumer::run(
                 offset_store,
                 registration_projection_command_receiver,
                 TestSourceProvider,
                 TestHandler {
                     events_processed: task_events_processed,
                 },
-            )
-            .await
+            );
+            tokio::join!(offset_store_task, projection_task)
         });
 
         b.to_async(&rt).iter(|| {

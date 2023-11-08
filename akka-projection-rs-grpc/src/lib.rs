@@ -18,46 +18,106 @@ pub mod consumer;
 mod delayer;
 pub mod producer;
 
-/// An envelope wraps a gRPC event associated with a specific entity.
+/// An envelope type that wraps a gRPC event associated with a specific entity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventEnvelope<E> {
     pub persistence_id: PersistenceId,
     pub timestamp: DateTime<Utc>,
     pub seq_nr: u64,
-    pub source: Source,
-    pub event: Option<E>,
+    source: Source,
+    pub event: E,
 }
 
-impl<E> WithPersistenceId for EventEnvelope<E> {
+#[derive(Clone, Debug, PartialEq)]
+struct SourceOnlyEventEnvelope {
+    pub persistence_id: PersistenceId,
+    pub timestamp: DateTime<Utc>,
+    pub seq_nr: u64,
+    source: Source,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct FilteredEventEnvelope {
+    pub persistence_id: PersistenceId,
+    pub timestamp: DateTime<Utc>,
+    pub seq_nr: u64,
+    source: Source,
+}
+
+/// An envelope for all types of gRPC events.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Envelope<E>(Envelopes<E>);
+
+#[derive(Clone, Debug, PartialEq)]
+enum Envelopes<E> {
+    Event(EventEnvelope<E>),
+    Filtered(FilteredEventEnvelope),
+    SourceOnly(SourceOnlyEventEnvelope),
+}
+
+impl<E> WithPersistenceId for Envelope<E> {
     fn persistence_id(&self) -> &PersistenceId {
-        &self.persistence_id
+        match &self.0 {
+            Envelopes::Event(envelope) => &envelope.persistence_id,
+            Envelopes::Filtered(envelope) => &envelope.persistence_id,
+            Envelopes::SourceOnly(envelope) => &envelope.persistence_id,
+        }
     }
 }
 
-impl<E> WithOffset for EventEnvelope<E> {
+impl<E> WithOffset for Envelope<E> {
     fn offset(&self) -> Offset {
-        Offset::Timestamp(TimestampOffset {
-            timestamp: self.timestamp,
-            seq_nr: self.seq_nr,
-        })
+        let (timestamp, seq_nr) = match &self.0 {
+            Envelopes::Event(envelope) => (envelope.timestamp, envelope.seq_nr),
+            Envelopes::Filtered(envelope) => (envelope.timestamp, envelope.seq_nr),
+            Envelopes::SourceOnly(envelope) => (envelope.timestamp, envelope.seq_nr),
+        };
+
+        Offset::Timestamp(TimestampOffset { timestamp, seq_nr })
     }
 }
 
-impl<E> WithSeqNr for EventEnvelope<E> {
+impl<E> WithSeqNr for Envelope<E> {
     fn seq_nr(&self) -> u64 {
-        self.seq_nr
+        match &self.0 {
+            Envelopes::Event(envelope) => envelope.seq_nr,
+            Envelopes::Filtered(envelope) => envelope.seq_nr,
+            Envelopes::SourceOnly(envelope) => envelope.seq_nr,
+        }
     }
 }
 
-impl<E> WithSource for EventEnvelope<E> {
+impl<E> WithSource for Envelope<E> {
     fn source(&self) -> Source {
-        self.source.clone()
+        match &self.0 {
+            Envelopes::Event(envelope) => envelope.source,
+            Envelopes::Filtered(envelope) => envelope.source,
+            Envelopes::SourceOnly(envelope) => envelope.source,
+        }
     }
 }
 
-impl<E> WithTimestamp for EventEnvelope<E> {
+impl<E> WithTimestamp for Envelope<E> {
     fn timestamp(&self) -> &DateTime<Utc> {
-        &self.timestamp
+        match &self.0 {
+            Envelopes::Event(envelope) => &envelope.timestamp,
+            Envelopes::Filtered(envelope) => &envelope.timestamp,
+            Envelopes::SourceOnly(envelope) => &envelope.timestamp,
+        }
+    }
+}
+
+/// Returned when the envelope cannot be represented as an event envelope.
+pub struct NotAnEventEnvelope;
+
+impl<E> TryFrom<Envelope<E>> for EventEnvelope<E> {
+    type Error = NotAnEventEnvelope;
+
+    fn try_from(value: Envelope<E>) -> Result<Self, Self::Error> {
+        match value.0 {
+            Envelopes::Event(envelope) => Ok(envelope),
+            Envelopes::Filtered(_) | Envelopes::SourceOnly(_) => Err(NotAnEventEnvelope),
+        }
     }
 }
 
@@ -292,7 +352,7 @@ impl TryFrom<proto::FilterCriteria> for FilterCriteria {
 /// Declares a gRPC event cannot be mapped to an event envelope.
 pub struct BadEvent;
 
-impl<E> TryFrom<proto::Event> for EventEnvelope<E>
+impl<E> TryFrom<proto::Event> for Envelope<E>
 where
     E: Default + Message,
 {
@@ -308,8 +368,7 @@ where
             if !payload.type_url.starts_with("type.googleapis.com/") {
                 return Err(BadEvent);
             }
-            let event = E::decode(Bytes::from(payload.value)).map_err(|_| BadEvent)?;
-            Some(event)
+            Some(E::decode(Bytes::from(payload.value)).map_err(|_| BadEvent)?)
         } else {
             None
         };
@@ -333,17 +392,28 @@ where
 
         let source = proto_event.source.parse::<Source>().map_err(|_| BadEvent)?;
 
-        Ok(EventEnvelope {
-            persistence_id,
-            timestamp,
-            seq_nr,
-            source,
-            event,
-        })
+        let envelope = if let Some(event) = event {
+            Envelopes::Event(EventEnvelope {
+                persistence_id,
+                timestamp,
+                seq_nr,
+                source,
+                event,
+            })
+        } else {
+            Envelopes::SourceOnly(SourceOnlyEventEnvelope {
+                persistence_id,
+                timestamp,
+                seq_nr,
+                source,
+            })
+        };
+
+        Ok(Envelope(envelope))
     }
 }
 
-impl<E> TryFrom<proto::FilteredEvent> for EventEnvelope<E>
+impl<E> TryFrom<proto::FilteredEvent> for Envelope<E>
 where
     E: Default + Message,
 {
@@ -354,8 +424,6 @@ where
             .persistence_id
             .parse::<PersistenceId>()
             .map_err(|_| BadEvent)?;
-
-        let event = None;
 
         let Some(offset) = proto_event.offset else {
             return Err(BadEvent);
@@ -376,12 +444,11 @@ where
 
         let source = proto_event.source.parse::<Source>().map_err(|_| BadEvent)?;
 
-        Ok(EventEnvelope {
+        Ok(Envelope(Envelopes::Filtered(FilteredEventEnvelope {
             persistence_id,
             timestamp,
             seq_nr,
             source,
-            event,
-        })
+        })))
     }
 }

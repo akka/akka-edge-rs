@@ -199,9 +199,9 @@ impl Filter {
     }
 
     /// A function that matches an envelope with criteria and passes it through if matched.
-    pub fn matches<E>(&self, envelope: &E) -> bool
+    pub fn matches<Envelope>(&self, envelope: &Envelope) -> bool
     where
-        E: WithPersistenceId + WithTags,
+        Envelope: WithPersistenceId + WithTags,
     {
         let tags = envelope.tags();
         let persistence_id = envelope.persistence_id();
