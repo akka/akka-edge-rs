@@ -147,38 +147,41 @@ where
     /// An effect to emit an event. The latest state given any previous effect
     /// having emitted an event, or else the state at the outset of the effects
     /// being applied, is also available.
-    fn and_then_emit_event<F, R>(self, f: F) -> And<B, Self, ThenEmitEvent<B, F, R>>
+    ///
+    /// Only applied when the previous result succeeded.
+    #[allow(clippy::type_complexity)]
+    fn then_emit_event<F>(
+        self,
+        f: F,
+    ) -> And<
+        B,
+        Self,
+        ThenEmitEvent<
+            B,
+            Box<
+                dyn FnOnce(
+                        &B,
+                        Option<&B::State>,
+                        Result,
+                    ) -> Ready<StdResult<Option<B::Event>, Error>>
+                    + Send,
+            >,
+            Ready<StdResult<Option<B::Event>, Error>>,
+        >,
+    >
     where
         Self: Sized,
         B::State: Send + Sync,
-        F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
-        R: Future<Output = StdResult<Option<B::Event>, Error>> + Send,
+        F: FnOnce(Option<&B::State>) -> Option<B::Event> + Send + 'static,
     {
+        let f = Box::new(|_b: &B, s: Option<&B::State>, r: Result| {
+            let r = if let Err(e) = r { Err(e) } else { Ok(f(s)) };
+            future::ready(r)
+        });
         And {
             _l: self,
             _r: ThenEmitEvent {
                 deletion_event: false,
-                f: Some(f),
-                phantom: PhantomData,
-            },
-            phantom: PhantomData,
-        }
-    }
-
-    /// An effect to emit a deletion event. The latest state given any previous effect
-    /// having emitted an event, or else the state at the outset of the effects
-    /// being applied, is also available.
-    fn and_then_emit_deletion_event<F, R>(self, f: F) -> And<B, Self, ThenEmitEvent<B, F, R>>
-    where
-        Self: Sized,
-        B::State: Send + Sync,
-        F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
-        R: Future<Output = StdResult<Option<B::Event>, Error>> + Send,
-    {
-        And {
-            _l: self,
-            _r: ThenEmitEvent {
-                deletion_event: true,
                 f: Some(f),
                 phantom: PhantomData,
             },
@@ -669,10 +672,10 @@ mod tests {
             expected_update: expected,
         };
         let (reply_to, reply_to_receiver) = oneshot::channel();
-        let reply = 1;
+        let reply_value = 1;
 
         assert!(emit_event(TestEvent)
-            .then_reply(move |_s| Some((reply_to, reply)))
+            .then_reply(move |_s| Some((reply_to, reply_value)))
             .process(
                 &TestBehavior,
                 &mut handler,
@@ -684,6 +687,43 @@ mod tests {
             .await
             .is_ok());
 
-        assert_eq!(reply_to_receiver.await, Ok(reply))
+        assert_eq!(reply_to_receiver.await, Ok(reply_value));
+    }
+
+    #[test(tokio::test)]
+    async fn test_reply_then_emit() {
+        let entity_id = EntityId::from("entity-id");
+        let expected = EventEnvelope {
+            deletion_event: false,
+            entity_id: entity_id.clone(),
+            seq_nr: 1,
+            event: TestEvent,
+            timestamp: Utc::now(),
+        };
+        let mut handler = TestHandler {
+            expected: expected.clone(),
+        };
+        let mut entity_ops = TestEntityOps {
+            expected_get_entity_id: entity_id.clone(),
+            get_result: TestState,
+            expected_update: expected,
+        };
+        let (reply_to, reply_to_receiver) = oneshot::channel();
+        let reply_value = 1;
+
+        assert!(reply(reply_to, reply_value)
+            .then_emit_event(|_s| Some(TestEvent))
+            .process(
+                &TestBehavior,
+                &mut handler,
+                &mut entity_ops,
+                &entity_id,
+                &mut 0,
+                Ok(()),
+            )
+            .await
+            .is_ok());
+
+        assert_eq!(reply_to_receiver.await, Ok(reply_value));
     }
 }
