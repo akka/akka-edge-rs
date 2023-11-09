@@ -13,6 +13,7 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
+use std::future::{self, Ready};
 use std::result::Result as StdResult;
 use std::{future::Future, io, marker::PhantomData};
 use tokio::sync::oneshot;
@@ -188,14 +189,32 @@ where
     /// An effect to reply an envelope. The latest state given any previous effect
     /// having emitted an event, or else the state at the outset of the effects
     /// being applied, is also available.
-    fn and_then_reply<F, R, T>(self, f: F) -> And<B, Self, ThenReply<B, F, R, T>>
+    ///
+    /// Only applied when the previous result succeeded.
+    #[allow(clippy::type_complexity)]
+    fn then_reply<F, T>(
+        self,
+        f: F,
+    ) -> And<
+        B,
+        Self,
+        ThenReply<
+            B,
+            Box<dyn FnOnce(&B, Option<&B::State>, Result) -> Ready<ReplyResult<T>> + Send>,
+            Ready<ReplyResult<T>>,
+            T,
+        >,
+    >
     where
         Self: Sized,
         B::State: Send + Sync,
-        F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
-        R: Future<Output = StdResult<Option<(oneshot::Sender<T>, T)>, Error>> + Send,
+        F: FnOnce(Option<&B::State>) -> Option<ReplyTo<T>> + Send + 'static,
         T: Send,
     {
+        let f = Box::new(|_b: &B, s: Option<&B::State>, r: Result| {
+            let r = if let Err(e) = r { Err(e) } else { Ok(f(s)) };
+            future::ready(r)
+        });
         And {
             _l: self,
             _r: ThenReply {
@@ -299,9 +318,16 @@ where
     }
 }
 
+/// The reply-to [oneshot::Sender] and the value to send as a result of some
+/// tuple.
+pub type ReplyTo<T> = (oneshot::Sender<T>, T);
+
+/// A result type for [ReplyTo] which is used to reply if wrapped with [Some].
+pub type ReplyResult<T> = StdResult<Option<ReplyTo<T>>, Error>;
+
 /// The return type of [reply].
 pub struct Reply<B, T> {
-    replier: Option<(oneshot::Sender<T>, T)>,
+    replier: Option<ReplyTo<T>>,
     phantom: PhantomData<B>,
 }
 
@@ -477,7 +503,7 @@ where
     B: EventSourcedBehavior + Send + Sync + 'static,
     B::State: Send + Sync,
     F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
-    R: Future<Output = StdResult<Option<(oneshot::Sender<T>, T)>, Error>> + Send,
+    R: Future<Output = ReplyResult<T>> + Send,
     T: Send,
 {
     async fn process(
@@ -514,7 +540,7 @@ where
     B: EventSourcedBehavior + Send + Sync + 'static,
     B::State: Send + Sync,
     F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
-    R: Future<Output = StdResult<Option<(oneshot::Sender<T>, T)>, Error>> + Send,
+    R: Future<Output = ReplyResult<T>> + Send,
     T: Send,
 {
 }
@@ -551,8 +577,6 @@ pub fn unhandled<B>() -> Box<Unhandled<B>> {
 
 #[cfg(test)]
 mod tests {
-
-    use std::future;
 
     use super::*;
 
@@ -648,7 +672,7 @@ mod tests {
         let reply = 1;
 
         assert!(emit_event(TestEvent)
-            .and_then_reply(|_b, _s, _r| future::ready(Ok(Some((reply_to, reply)))))
+            .then_reply(move |_s| Some((reply_to, reply)))
             .process(
                 &TestBehavior,
                 &mut handler,
