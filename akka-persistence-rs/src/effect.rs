@@ -552,3 +552,118 @@ pub fn unhandled<B>() -> Box<Unhandled<B>> {
         phantom: PhantomData,
     })
 }
+
+#[cfg(test)]
+mod tests {
+
+    use std::future;
+
+    use super::*;
+
+    use crate::entity::Context;
+    use test_log::test;
+
+    #[derive(Default)]
+    struct TestState;
+
+    struct TestCommand;
+
+    #[derive(Copy, Clone, Debug, PartialEq)]
+    struct TestEvent;
+
+    struct TestBehavior;
+
+    impl EventSourcedBehavior for TestBehavior {
+        type State = TestState;
+        type Command = TestCommand;
+        type Event = TestEvent;
+
+        fn for_command(
+            _context: &Context,
+            _state: &Self::State,
+            _command: Self::Command,
+        ) -> Box<dyn Effect<Self>> {
+            todo!()
+        }
+
+        fn on_event(_context: &Context, _state: &mut Self::State, _event: Self::Event) {
+            todo!()
+        }
+    }
+
+    struct TestHandler {
+        expected: EventEnvelope<TestEvent>,
+    }
+
+    #[async_trait]
+    impl Handler<TestEvent> for TestHandler {
+        async fn process(
+            &mut self,
+            envelope: EventEnvelope<TestEvent>,
+        ) -> io::Result<EventEnvelope<TestEvent>> {
+            assert_eq!(envelope.deletion_event, self.expected.deletion_event);
+            assert_eq!(envelope.entity_id, self.expected.entity_id);
+            assert_eq!(envelope.seq_nr, self.expected.seq_nr);
+            assert_eq!(envelope.event, self.expected.event);
+            Ok(envelope)
+        }
+    }
+
+    struct TestEntityOps {
+        expected_get_entity_id: EntityId,
+        get_result: TestState,
+        expected_update: EventEnvelope<TestEvent>,
+    }
+
+    impl EntityOps<TestBehavior> for TestEntityOps {
+        fn get(&mut self, entity_id: &EntityId) -> Option<&TestState> {
+            assert_eq!(entity_id, &self.expected_get_entity_id);
+            Some(&self.get_result)
+        }
+
+        fn update(&mut self, envelope: EventEnvelope<TestEvent>) -> u64 {
+            assert_eq!(envelope.deletion_event, self.expected_update.deletion_event);
+            assert_eq!(envelope.entity_id, self.expected_update.entity_id);
+            assert_eq!(envelope.seq_nr, self.expected_update.seq_nr);
+            assert_eq!(envelope.event, self.expected_update.event);
+            envelope.seq_nr
+        }
+    }
+
+    #[test(tokio::test)]
+    async fn test_emit_then_reply() {
+        let entity_id = EntityId::from("entity-id");
+        let expected = EventEnvelope {
+            deletion_event: false,
+            entity_id: entity_id.clone(),
+            seq_nr: 1,
+            event: TestEvent,
+            timestamp: Utc::now(),
+        };
+        let mut handler = TestHandler {
+            expected: expected.clone(),
+        };
+        let mut entity_ops = TestEntityOps {
+            expected_get_entity_id: entity_id.clone(),
+            get_result: TestState,
+            expected_update: expected,
+        };
+        let (reply_to, reply_to_receiver) = oneshot::channel();
+        let reply = 1;
+
+        assert!(emit_event(TestEvent)
+            .and_then_reply(|_b, _s, _r| future::ready(Ok(Some((reply_to, reply)))))
+            .process(
+                &TestBehavior,
+                &mut handler,
+                &mut entity_ops,
+                &entity_id,
+                &mut 0,
+                Ok(()),
+            )
+            .await
+            .is_ok());
+
+        assert_eq!(reply_to_receiver.await, Ok(reply))
+    }
+}
