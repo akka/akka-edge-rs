@@ -87,13 +87,9 @@ where
                 prev_result,
             )
             .await;
-        if r.is_ok() {
-            self._r
-                .process(behavior, handler, entities, entity_id, last_seq_nr, r)
-                .await
-        } else {
-            r
-        }
+        self._r
+            .process(behavior, handler, entities, entity_id, last_seq_nr, r)
+            .await
     }
 }
 
