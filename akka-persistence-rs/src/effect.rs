@@ -3,9 +3,10 @@
 //! to be applied (run) before the next command for an entity id is processed.
 //!
 //! Convience methods are providing for commonly chained operations, and take
-//! the form of `and_then` as the prefix. By Rust convention, `and_then`
+//! the form of `and_then` and `then` as the prefix. By Rust convention, `and_then`
 //! provides the result of the previous operation and expects a result provided
-//! given some closure.
+//! given some closure. Also by convention, `then` is applied only when the previous operation
+//! completed successfully.
 //!
 //! In the case where there is no convenience method, a generalized `and`
 //! operation can be used to chain any effect found here, or a customized
