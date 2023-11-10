@@ -1,7 +1,7 @@
 //! An offset store for use with the Streambed commit log.
 
 use akka_persistence_rs::{
-    effect::{emit_event, reply, Effect, EffectExt},
+    effect::{persist_event, reply, Effect, EffectExt},
     entity::{Context, EventSourcedBehavior},
     entity_manager, EntityId, EntityType, Message, Offset, PersistenceId,
 };
@@ -20,6 +20,7 @@ use tokio::sync::{mpsc, oneshot, watch, Notify};
 mod internal {
     use std::sync::Arc;
 
+    use akka_persistence_rs_commitlog::{CannotConsume, CannotProduce};
     use tokio::sync::Notify;
 
     use super::*;
@@ -140,7 +141,7 @@ mod internal {
                 Command::Save {
                     persistence_id,
                     offset,
-                } => emit_event(Event::Saved {
+                } => persist_event(Event::Saved {
                     persistence_id: persistence_id.clone(),
                     offset,
                 })
@@ -195,13 +196,13 @@ mod internal {
     #[async_trait]
     impl<F> CommitLogMarshaller<Event> for OffsetStoreEventMarshaller<F>
     where
-        F: Fn(&EntityId, &Event) -> Option<Key> + Send + Sync,
+        F: Fn(&EntityId, &Event) -> Key + Send + Sync,
     {
         fn entity_type(&self) -> EntityType {
             self.entity_type.clone()
         }
 
-        fn to_compaction_key(&self, entity_id: &EntityId, event: &Event) -> Option<Key> {
+        fn to_compaction_key(&self, entity_id: &EntityId, event: &Event) -> Key {
             (self.to_compaction_key)(entity_id, event)
         }
 
@@ -217,16 +218,22 @@ mod internal {
             &self,
             entity_id: EntityId,
             record: ConsumerRecord,
-        ) -> Option<EventEnvelope<Event>> {
-            let event = ciborium::de::from_reader(record.value.as_slice()).ok()?;
-            record.timestamp.map(|timestamp| EventEnvelope {
-                persistence_id: PersistenceId::new(self.entity_type(), entity_id),
+        ) -> Result<EventEnvelope<Event>, CannotConsume> {
+            let event = ciborium::de::from_reader(record.value.as_slice()).map_err(|e| {
+                CannotConsume::new(
+                    entity_id.clone(),
+                    format!("CBOR deserialization issue: {e}"),
+                )
+            })?;
+            let envelope = record.timestamp.map(|timestamp| EventEnvelope {
+                persistence_id: PersistenceId::new(self.entity_type(), entity_id.clone()),
                 seq_nr: 0, // We don't care about sequence numbers with the offset store as they won't be projected anywhere
                 timestamp,
                 event,
                 offset: record.offset,
                 tags: vec![],
-            })
+            });
+            envelope.ok_or(CannotConsume::new(entity_id, "No timestamp"))
         }
 
         async fn producer_record(
@@ -236,16 +243,18 @@ mod internal {
             _seq_nr: u64,
             timestamp: DateTime<Utc>,
             event: &Event,
-        ) -> Option<ProducerRecord> {
+        ) -> Result<ProducerRecord, CannotProduce> {
             let mut value = Vec::new();
-            ciborium::ser::into_writer(event, &mut value).ok()?;
+            ciborium::ser::into_writer(event, &mut value).map_err(|e| {
+                CannotProduce::new(entity_id.clone(), format!("CBOR serialization issue: {e}"))
+            })?;
 
             let headers = vec![Header {
                 key: HeaderKey::from("entity-id"),
                 value: entity_id.as_bytes().into(),
             }];
-            let key = self.to_compaction_key(&entity_id, event)?;
-            Some(ProducerRecord {
+            let key = self.to_compaction_key(&entity_id, event);
+            Ok(ProducerRecord {
                 topic,
                 headers,
                 timestamp: Some(timestamp),
@@ -321,9 +330,9 @@ pub async fn run(
         .await
         .unwrap();
 
-    let to_compaction_key = |_: &EntityId, event: &Event| -> Option<Key> {
+    let to_compaction_key = |_: &EntityId, event: &Event| -> Key {
         let Event::Saved { persistence_id, .. } = event;
-        Some(persistence_id.jdk_string_hash() as u64)
+        persistence_id.jdk_string_hash() as u64
     };
 
     let file_log_topic_adapter = CommitLogTopicAdapter::new(

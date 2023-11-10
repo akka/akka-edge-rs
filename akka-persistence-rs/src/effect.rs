@@ -125,7 +125,7 @@ where
     /// Perform a side effect to run a function asynchronously after this current one.
     /// The associated behavior is available so that communication channels, for
     /// example, can be accessed by the side-effect. Additionally, the
-    /// latest state given any previous effect having emitted an event,
+    /// latest state given any previous effect having persisted an event,
     /// or else the state at the outset of the effects being applied,
     /// is also available.
     fn and_then<F, R>(self, f: F) -> And<B, Self, Then<B, F, R>>
@@ -145,19 +145,19 @@ where
         }
     }
 
-    /// An effect to emit an event. The latest state given any previous effect
-    /// having emitted an event, or else the state at the outset of the effects
+    /// An effect to persist an event. The latest state given any previous effect
+    /// having persisted an event, or else the state at the outset of the effects
     /// being applied, is also available.
     ///
     /// Only applied when the previous result succeeded.
     #[allow(clippy::type_complexity)]
-    fn then_emit_event<F>(
+    fn then_persist_event<F>(
         self,
         f: F,
     ) -> And<
         B,
         Self,
-        ThenEmitEvent<
+        ThenPersistEvent<
             B,
             Box<
                 dyn FnOnce(
@@ -181,7 +181,7 @@ where
         });
         And {
             _l: self,
-            _r: ThenEmitEvent {
+            _r: ThenPersistEvent {
                 deletion_event: false,
                 f: Some(f),
                 phantom: PhantomData,
@@ -191,7 +191,7 @@ where
     }
 
     /// An effect to reply an envelope. The latest state given any previous effect
-    /// having emitted an event, or else the state at the outset of the effects
+    /// having persisted an event, or else the state at the outset of the effects
     /// being applied, is also available.
     ///
     /// Only applied when the previous result succeeded.
@@ -238,8 +238,8 @@ where
     }
 }
 
-/// The return type of [emit_event] and [emit_deletion_event].
-pub struct EmitEvent<B>
+/// The return type of [persist_event] and [persist_deletion_event].
+pub struct PersistEvent<B>
 where
     B: EventSourcedBehavior,
 {
@@ -248,7 +248,7 @@ where
 }
 
 #[async_trait]
-impl<B> Effect<B> for EmitEvent<B>
+impl<B> Effect<B> for PersistEvent<B>
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
     B::State: Send,
@@ -289,7 +289,7 @@ where
     }
 }
 
-impl<B> EffectExt<B> for EmitEvent<B>
+impl<B> EffectExt<B> for PersistEvent<B>
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
     B::State: Send,
@@ -297,26 +297,25 @@ where
 {
 }
 
-/// An effect to emit an event upon having successfully handed it off to
-/// be persisted.
-pub fn emit_event<B>(event: B::Event) -> EmitEvent<B>
+/// An effect to persist an event.
+pub fn persist_event<B>(event: B::Event) -> PersistEvent<B>
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
 {
-    EmitEvent {
+    PersistEvent {
         deletion_event: false,
         event: Some(event),
     }
 }
 
-/// An effect to emit an event upon having successfully handed it off to
+/// An effect to persist an event upon having successfully handed it off to
 /// be persisted. The event will be flagged to represent the deletion of
 /// an entity instance.
-pub fn emit_deletion_event<B>(event: B::Event) -> EmitEvent<B>
+pub fn persist_deletion_event<B>(event: B::Event) -> PersistEvent<B>
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
 {
-    EmitEvent {
+    PersistEvent {
         deletion_event: true,
         event: Some(event),
     }
@@ -368,7 +367,7 @@ where
 }
 
 /// An effect to reply an envelope if the previous effect completed
-/// successfully. Note that if state from having emitted an event
+/// successfully. Note that if state from having persisted an event
 /// via a prior effect is required, then use a [then] effect instead.
 pub fn reply<B, T>(reply_to: oneshot::Sender<T>, reply: T) -> Reply<B, T> {
     Reply {
@@ -421,7 +420,7 @@ where
 /// A side effect to run a function asynchronously. The associated
 /// behavior is available so that communication channels, for
 /// example, can be accessed by the side-effect. Additionally, the
-/// latest state given any previous effect having emitted an event,
+/// latest state given any previous effect having persisted an event,
 /// or else the state at the outset of the effects being applied,
 /// is also available.
 pub fn then<B, F, R>(f: F) -> Then<B, F, R>
@@ -437,8 +436,8 @@ where
     }
 }
 
-/// The return type of [EffectExt::and_then_emit_event] and  [EffectExt::and_then_emit_deletion_event].
-pub struct ThenEmitEvent<B, F, R>
+/// The return type of [EffectExt::then_persist_event].
+pub struct ThenPersistEvent<B, F, R>
 where
     B: EventSourcedBehavior,
 {
@@ -448,7 +447,7 @@ where
 }
 
 #[async_trait]
-impl<B, F, R> Effect<B> for ThenEmitEvent<B, F, R>
+impl<B, F, R> Effect<B> for ThenPersistEvent<B, F, R>
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
     B::State: Send + Sync,
@@ -469,7 +468,7 @@ where
         if let Some(f) = f {
             let result = f(behavior, entities.get(entity_id), prev_result).await;
             if let Ok(event) = result {
-                let mut effect = EmitEvent::<B> {
+                let mut effect = PersistEvent::<B> {
                     deletion_event: self.deletion_event,
                     event,
                 };
@@ -485,7 +484,7 @@ where
     }
 }
 
-impl<B, F, R> EffectExt<B> for ThenEmitEvent<B, F, R>
+impl<B, F, R> EffectExt<B> for ThenPersistEvent<B, F, R>
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
     B::State: Send + Sync,
@@ -655,7 +654,7 @@ mod tests {
     }
 
     #[test(tokio::test)]
-    async fn test_emit_then_reply() {
+    async fn test_persist_then_reply() {
         let entity_id = EntityId::from("entity-id");
         let expected = EventEnvelope {
             deletion_event: false,
@@ -675,7 +674,7 @@ mod tests {
         let (reply_to, reply_to_receiver) = oneshot::channel();
         let reply_value = 1;
 
-        assert!(emit_event(TestEvent)
+        assert!(persist_event(TestEvent)
             .then_reply(move |_s| Some((reply_to, reply_value)))
             .process(
                 &TestBehavior,
@@ -692,7 +691,7 @@ mod tests {
     }
 
     #[test(tokio::test)]
-    async fn test_reply_then_emit() {
+    async fn test_reply_then_persist() {
         let entity_id = EntityId::from("entity-id");
         let expected = EventEnvelope {
             deletion_event: false,
@@ -713,7 +712,7 @@ mod tests {
         let reply_value = 1;
 
         assert!(reply(reply_to, reply_value)
-            .then_emit_event(|_s| Some(TestEvent))
+            .then_persist_event(|_s| Some(TestEvent))
             .process(
                 &TestBehavior,
                 &mut handler,

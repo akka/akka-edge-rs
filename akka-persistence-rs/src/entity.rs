@@ -27,10 +27,10 @@ pub trait EventSourcedBehavior {
     type State: Default;
     /// The command(s) that are able to be processed by the entity.
     type Command;
-    /// The event emitted having performed an effect.
+    /// The event produced having performed an effect.
     type Event;
 
-    /// Given a state and command, optionally emit an effect that may cause an
+    /// Given a state and command, optionally produce an effect that may cause an
     /// event transition. Events are responsible for mutating state.
     /// State can also be associated with the behavior so that other effects can be
     /// performed. For example, a behavior might be created with a channel sender
