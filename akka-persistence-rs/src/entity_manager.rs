@@ -11,10 +11,12 @@ use chrono::Utc;
 use log::debug;
 use log::warn;
 use lru::LruCache;
+use std::future::Future;
 use std::hash::BuildHasher;
 use std::io;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
+use tokio::sync::mpsc;
 use tokio::sync::mpsc::Receiver;
 use tokio_stream::{Stream, StreamExt};
 
@@ -118,8 +120,10 @@ where
     }
 }
 
-/// Manages the lifecycle of entities given a specific behavior.
-/// Entity managers are established given an adapter of persistent events associated
+/// Provides an asynchronous task and a command channel that can run and drive an entity manager.
+///
+/// Entity managers manage the lifecycle of entities given a specific behavior.
+/// They are established given an adapter of persistent events associated
 /// with an entity type. That source is consumed by subsequently telling
 /// the entity manager to run, generally on its own task. Events are persisted by
 /// calling on the adapter's handler.
@@ -127,32 +131,45 @@ where
 /// Commands are sent to a channel established for the entity manager.
 /// Effects may be produced as a result of performing a command, which may,
 /// in turn, perform side effects and yield events.
-pub async fn run<A, B>(
+///
+/// * `command_capacity` declares size of the command channel and will panic at runtime if zero.
+/// * `entity_capacity` declares size of the number of entities to cache in memory at one time,
+/// and will panic at runtime if zero.
+pub fn task<A, B>(
     behavior: B,
     adapter: A,
-    receiver: Receiver<Message<B::Command>>,
-    capacity: NonZeroUsize,
-) -> io::Result<()>
+    command_capacity: usize,
+    entity_capacity: usize,
+) -> (
+    impl Future<Output = io::Result<()>>,
+    mpsc::Sender<Message<B::Command>>,
+)
 where
     B: EventSourcedBehavior + Send + Sync + 'static,
     B::Command: Send,
     B::State: Send + Sync,
     A: SourceProvider<B::Event> + Handler<B::Event> + Send + 'static,
 {
-    run_with_hasher(
-        behavior,
-        adapter,
-        receiver,
-        capacity,
-        lru::DefaultHasher::default(),
+    let (sender, receiver) = mpsc::channel(command_capacity);
+    (
+        task_with_hasher(
+            behavior,
+            adapter,
+            receiver,
+            entity_capacity,
+            lru::DefaultHasher::default(),
+        ),
+        sender,
     )
-    .await
 }
 
-/// Manages the lifecycle of entities given a specific behavior.
-/// Entity managers are established given a source of events associated
+/// Provides an asynchronous task and a command channel that can run and drive an entity manager.
+///
+/// Entity managers manage the lifecycle of entities given a specific behavior.
+/// They are established given an adapter of persistent events associated
 /// with an entity type. That source is consumed by subsequently telling
-/// the entity manager to run, generally on its own task.
+/// the entity manager to run, generally on its own task. Events are persisted by
+/// calling on the adapter's handler.
 ///
 /// Commands are sent to a channel established for the entity manager.
 /// Effects may be produced as a result of performing a command, which may,
@@ -160,11 +177,14 @@ where
 ///
 /// A hasher for entity ids can also be supplied which will be used to control the
 /// internal caching of entities.
-pub async fn run_with_hasher<A, B, S>(
+///
+/// * `entity_capacity` declares size of the number of entities to cache in memory at one time,
+/// and will panic at runtime if zero.
+pub async fn task_with_hasher<A, B, S>(
     behavior: B,
     mut adapter: A,
     mut receiver: Receiver<Message<B::Command>>,
-    capacity: NonZeroUsize,
+    entity_capacity: usize,
     hash_builder: S,
 ) -> io::Result<()>
 where
@@ -177,7 +197,7 @@ where
     // Source our initial events and populate our internal entities map.
 
     let mut entities = EntityLruCache {
-        cache: LruCache::with_hasher(capacity, hash_builder),
+        cache: LruCache::with_hasher(NonZeroUsize::new(entity_capacity).unwrap(), hash_builder),
     };
 
     let envelopes = adapter.source_initial().await?;
@@ -490,14 +510,9 @@ mod tests {
             captured_events: temp_sensor_events,
         };
 
-        let (temp_sensor, temp_sensor_receiver) = mpsc::channel(10);
-
-        let entity_manager_task = tokio::spawn(run(
-            temp_sensor_behavior,
-            temp_sensor_event_adapter,
-            temp_sensor_receiver,
-            NonZeroUsize::new(1).unwrap(),
-        ));
+        let (entity_manager_task, temp_sensor) =
+            task(temp_sensor_behavior, temp_sensor_event_adapter, 10, 1);
+        let entity_manager_task = tokio::spawn(entity_manager_task);
 
         // Send a command to update the temperature and wait until it is done. We then wait
         // on a noification from within our entity that the update has occurred. Waiting on

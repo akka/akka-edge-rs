@@ -20,15 +20,17 @@ struct StorableState {
     last_offset: Option<Offset>,
 }
 
-/// Provides at-least-once projections with storage for projection offsets,
+/// Provides an asynchronous task and a kill switch that can run and stop a projection.
+///
+/// An at-least-once projection is returned with storage for projection offsets,
 /// meaning, for multiple runs of a projection, it is possible for events to repeat
 /// from previous runs.
-pub async fn run<A, B, Envelope, EE, IH, SP>(
+pub fn task<A, B, Envelope, EE, IH, SP>(
     offset_store: mpsc::Sender<offset_store::Command>,
-    mut kill_switch: oneshot::Receiver<()>,
     source_provider: SP,
     handler: IH,
-) where
+) -> (impl Future<Output = ()>, oneshot::Sender<()>)
+where
     A: Handler<Envelope = EE> + Send,
     B: PendingHandler<Envelope = EE> + Send,
     EE: TryFrom<Envelope>,
@@ -36,165 +38,172 @@ pub async fn run<A, B, Envelope, EE, IH, SP>(
     IH: Into<Handlers<A, B>>,
     SP: SourceProvider<Envelope = Envelope>,
 {
-    let mut handler = handler.into();
+    let (kill_switch, mut kill_switch_receiver) = oneshot::channel();
 
-    let mut always_pending_handler: Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>> =
-        Box::pin(future::pending());
+    let task = async move {
+        let mut handler = handler.into();
 
-    'outer: loop {
-        let mut source = source_provider
-            .source(|| async {
-                let (reply_to, reply_to_receiver) = oneshot::channel();
-                offset_store
-                    .send(offset_store::Command::GetLastOffset { reply_to })
-                    .await
-                    .ok()?;
-                reply_to_receiver.await.ok()?
-            })
-            .await;
+        let mut always_pending_handler: Pin<
+            Box<dyn Future<Output = Result<(), HandlerError>> + Send>,
+        > = Box::pin(future::pending());
 
-        let mut always_pending_source: Pin<Box<dyn Stream<Item = Envelope> + Send>> =
-            Box::pin(stream::pending());
+        'outer: loop {
+            let mut source = source_provider
+                .source(|| async {
+                    let (reply_to, reply_to_receiver) = oneshot::channel();
+                    offset_store
+                        .send(offset_store::Command::GetLastOffset { reply_to })
+                        .await
+                        .ok()?;
+                    reply_to_receiver.await.ok()?
+                })
+                .await;
 
-        let mut active_source = &mut source;
+            let mut always_pending_source: Pin<Box<dyn Stream<Item = Envelope> + Send>> =
+                Box::pin(stream::pending());
 
-        let mut handler_futures = VecDeque::with_capacity(B::MAX_PENDING);
+            let mut active_source = &mut source;
 
-        loop {
-            tokio::select! {
-                envelope = active_source.next() => {
-                    if let Some(envelope) = envelope {
-                        let persistence_id = envelope.persistence_id().clone();
-                        let offset = envelope.offset();
+            let mut handler_futures = VecDeque::with_capacity(B::MAX_PENDING);
 
-                        // Validate timestamp offsets if we have one.
-                        let envelope = if matches!(offset, Offset::Timestamp(_)) {
-                            // Process the sequence number. If it isn't what we expect then we go round again.
+            loop {
+                tokio::select! {
+                    envelope = active_source.next() => {
+                        if let Some(envelope) = envelope {
+                            let persistence_id = envelope.persistence_id().clone();
+                            let offset = envelope.offset();
 
-                            let seq_nr = envelope.seq_nr();
+                            // Validate timestamp offsets if we have one.
+                            let envelope = if matches!(offset, Offset::Timestamp(_)) {
+                                // Process the sequence number. If it isn't what we expect then we go round again.
 
-                            let (reply_to, reply_to_receiver) = oneshot::channel();
-                            if offset_store
-                                .send(offset_store::Command::GetOffset { persistence_id: persistence_id.clone(), reply_to })
-                                .await
-                                .is_err()
-                            {
-                                warn!("Cannot send to the offset store: {}. Aborting stream.", persistence_id);
-                                break;
-                            }
+                                let seq_nr = envelope.seq_nr();
 
-                            let next_seq_nr = if let Ok(offset) = reply_to_receiver.await {
-                                if let Some(Offset::Timestamp(TimestampOffset { seq_nr, .. })) = offset {
-                                    seq_nr.wrapping_add(1)
-                                } else {
-                                    1
-                                }
-                            } else {
-                                warn!("Cannot receive from the offset store: {}. Aborting stream.", persistence_id);
-                                break
-                            };
-
-                            let source = envelope.source();
-
-                            if seq_nr > next_seq_nr && envelope.source() == Source::Backtrack {
-                                // This shouldn't happen, if so then abort.
-                                warn!("Back track received for a future event: {}. Aborting stream.", persistence_id);
-                                break;
-                            } else if seq_nr != next_seq_nr {
-                                // Duplicate or gap
-                                continue;
-                            }
-
-                            // If the sequence number is what we expect and the producer is backtracking, then
-                            // request its payload. If we can't get its payload then we abort as it is an error.
-
-                            let resolved_envelope = if source == Source::Backtrack {
-                                if let Some(event) = source_provider.load_envelope(persistence_id.clone(), seq_nr)
-                                    .await
-                                {
-                                    Some(event)
-                                } else {
-                                    warn!("Cannot obtain an backtrack envelope: {}. Aborting stream.", persistence_id);
-                                    None
-                                }
-                            } else {
-                                Some(envelope)
-                            };
-
-                            let Some(envelope) = resolved_envelope else { break; };
-                            envelope
-                        } else {
-                            envelope
-                        };
-
-                        // We now have an event correctly sequenced. Process it.
-
-                        match &mut handler {
-                            Handlers::Ready(handler, _) => {
-                                if let Ok(event_envelope) = envelope.try_into() {
-                                    if handler.process(event_envelope).await.is_err() {
-                                        break;
-                                    }
-                                }
+                                let (reply_to, reply_to_receiver) = oneshot::channel();
                                 if offset_store
-                                    .send(offset_store::Command::SaveOffset { persistence_id, offset })
+                                    .send(offset_store::Command::GetOffset { persistence_id: persistence_id.clone(), reply_to })
                                     .await
                                     .is_err()
                                 {
+                                    warn!("Cannot send to the offset store: {}. Aborting stream.", persistence_id);
                                     break;
                                 }
-                            }
-                            Handlers::Pending(handler, _) => {
-                                let pending = if let Ok(event_envelope) = envelope.try_into() {
-                                    let Ok(pending) = handler.process_pending(event_envelope).await else {
-                                        break;
-                                    };
-                                    pending
+
+                                let next_seq_nr = if let Ok(offset) = reply_to_receiver.await {
+                                    if let Some(Offset::Timestamp(TimestampOffset { seq_nr, .. })) = offset {
+                                        seq_nr.wrapping_add(1)
+                                    } else {
+                                        1
+                                    }
                                 } else {
-                                    Box::pin(future::ready(Ok(())))
+                                    warn!("Cannot receive from the offset store: {}. Aborting stream.", persistence_id);
+                                    break
                                 };
-                                handler_futures.push_back((pending, persistence_id, offset));
-                                // If we've reached the limit on the pending futures in-flight
-                                // then back off sourcing more.
-                                if handler_futures.len() == B::MAX_PENDING {
-                                    active_source = &mut always_pending_source;
+
+                                let source = envelope.source();
+
+                                if seq_nr > next_seq_nr && envelope.source() == Source::Backtrack {
+                                    // This shouldn't happen, if so then abort.
+                                    warn!("Back track received for a future event: {}. Aborting stream.", persistence_id);
+                                    break;
+                                } else if seq_nr != next_seq_nr {
+                                    // Duplicate or gap
+                                    continue;
                                 }
+
+                                // If the sequence number is what we expect and the producer is backtracking, then
+                                // request its payload. If we can't get its payload then we abort as it is an error.
+
+                                let resolved_envelope = if source == Source::Backtrack {
+                                    if let Some(event) = source_provider.load_envelope(persistence_id.clone(), seq_nr)
+                                        .await
+                                    {
+                                        Some(event)
+                                    } else {
+                                        warn!("Cannot obtain an backtrack envelope: {}. Aborting stream.", persistence_id);
+                                        None
+                                    }
+                                } else {
+                                    Some(envelope)
+                                };
+
+                                let Some(envelope) = resolved_envelope else { break; };
+                                envelope
+                            } else {
+                                envelope
+                            };
+
+                            // We now have an event correctly sequenced. Process it.
+
+                            match &mut handler {
+                                Handlers::Ready(handler, _) => {
+                                    if let Ok(event_envelope) = envelope.try_into() {
+                                        if handler.process(event_envelope).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    if offset_store
+                                        .send(offset_store::Command::SaveOffset { persistence_id, offset })
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                Handlers::Pending(handler, _) => {
+                                    let pending = if let Ok(event_envelope) = envelope.try_into() {
+                                        let Ok(pending) = handler.process_pending(event_envelope).await else {
+                                            break;
+                                        };
+                                        pending
+                                    } else {
+                                        Box::pin(future::ready(Ok(())))
+                                    };
+                                    handler_futures.push_back((pending, persistence_id, offset));
+                                    // If we've reached the limit on the pending futures in-flight
+                                    // then back off sourcing more.
+                                    if handler_futures.len() == B::MAX_PENDING {
+                                        active_source = &mut always_pending_source;
+                                    }
+                            }
+                            }
+                        } else {
+                            break;
                         }
+                    }
+
+                    pending = handler_futures.get_mut(0).map_or_else(|| &mut always_pending_handler, |(f, _, _)| f) => {
+                        // A pending future will never complete so this MUST mean that we have a element in our queue.
+                        let (_, persistence_id, offset) = handler_futures.pop_front().unwrap();
+
+                        // We've freed up a slot on the pending futures in-flight, so allow more events to be received.
+                        active_source = &mut source;
+
+                        // If all is well with our pending future so we can finally cause the offset to be persisted.
+                        if pending.is_err()
+                            || offset_store
+                                .send(offset_store::Command::SaveOffset { persistence_id, offset })
+                                .await
+                                .is_err()
+                        {
+                            break;
                         }
-                    } else {
-                        break;
                     }
-                }
 
-                pending = handler_futures.get_mut(0).map_or_else(|| &mut always_pending_handler, |(f, _, _)| f) => {
-                    // A pending future will never complete so this MUST mean that we have a element in our queue.
-                    let (_, persistence_id, offset) = handler_futures.pop_front().unwrap();
-
-                    // We've freed up a slot on the pending futures in-flight, so allow more events to be received.
-                    active_source = &mut source;
-
-                    // If all is well with our pending future so we can finally cause the offset to be persisted.
-                    if pending.is_err()
-                        || offset_store
-                            .send(offset_store::Command::SaveOffset { persistence_id, offset })
-                            .await
-                            .is_err()
-                    {
-                        break;
+                    _ = &mut kill_switch_receiver => {
+                        debug!("storage killed.");
+                        break 'outer;
                     }
-                }
 
-                _ = &mut kill_switch => {
-                    debug!("storage killed.");
-                    break 'outer;
-                }
-
-                else => {
-                    break 'outer;
+                    else => {
+                        break 'outer;
+                    }
                 }
             }
         }
-    }
+    };
+
+    (task, kill_switch)
 }
 
 #[cfg(test)]
@@ -383,29 +392,23 @@ mod tests {
         event_value: String,
         handler: IH,
     ) where
-        A: Handler<Envelope = TestEnvelope> + Send,
-        B: PendingHandler<Envelope = TestEnvelope> + Send,
+        A: Handler<Envelope = TestEnvelope> + Send + 'static,
+        B: PendingHandler<Envelope = TestEnvelope> + Send + 'static,
         IH: Into<Handlers<A, B>> + Send + 'static,
     {
         // Process an event.
 
-        let (_registration_projection_command, registration_projection_command_receiver) =
-            oneshot::channel();
-
         let (offset_store, mut offset_store_receiver) = mpsc::channel(1);
         let task_persistence_id = persistence_id.clone();
-        tokio::spawn(async move {
-            run(
-                offset_store,
-                registration_projection_command_receiver,
-                MySourceProvider {
-                    persistence_id: task_persistence_id.clone(),
-                    event_value: event_value.clone(),
-                },
-                handler,
-            )
-            .await
-        });
+        let (projection_task, _kill_switch) = task(
+            offset_store,
+            MySourceProvider {
+                persistence_id: task_persistence_id.clone(),
+                event_value: event_value.clone(),
+            },
+            handler,
+        );
+        tokio::spawn(projection_task);
 
         if let Some(offset_store::Command::GetLastOffset { reply_to }) =
             offset_store_receiver.recv().await
