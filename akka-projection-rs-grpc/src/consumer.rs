@@ -23,8 +23,10 @@ use crate::proto;
 use crate::Envelope;
 use crate::StreamId;
 
+/// Provides a source of gRPC events consumed from a remote producer.
 pub struct GrpcSourceProvider<E, EP> {
-    consumer_filters: Option<watch::Receiver<Vec<FilterCriteria>>>,
+    consumer_filters: Option<watch::Sender<Vec<FilterCriteria>>>,
+    consumer_filters_receiver: Option<watch::Receiver<Vec<FilterCriteria>>>,
     event_producer_channel: EP,
     slice_range: Range<u32>,
     stream_id: StreamId,
@@ -36,6 +38,9 @@ where
     EP: Fn() -> EPR,
     EPR: Future<Output = Result<Channel, tonic::transport::Error>>,
 {
+    /// Construct a new source with a closure that is able to construct
+    /// connections in any way that is required e.g. a secure connection using
+    /// TLS, or using UDP etc.
     pub fn new(event_producer_channel: EP, stream_id: StreamId) -> Self {
         let slice_range = akka_persistence_rs::slice_ranges(1);
 
@@ -46,6 +51,8 @@ where
         )
     }
 
+    /// If more than one slice range is required then it can
+    /// be conveyed here.
     pub fn with_slice_range(
         event_producer_channel: EP,
         stream_id: StreamId,
@@ -53,6 +60,7 @@ where
     ) -> Self {
         Self {
             consumer_filters: None,
+            consumer_filters_receiver: None,
             event_producer_channel,
             slice_range,
             stream_id,
@@ -60,12 +68,23 @@ where
         }
     }
 
-    pub fn with_consumer_filters(
-        mut self,
-        consumer_filters: watch::Receiver<Vec<FilterCriteria>>,
-    ) -> Self {
+    /// Provide an initial filter, or any empty [Vec] if none
+    /// are required. If more filters are required to be sent
+    /// then [Self::consumer_filters] can be used to obtain the
+    /// means to do so.
+    pub fn with_initial_consumer_filters(mut self, consumer_filters: Vec<FilterCriteria>) -> Self {
+        let (consumer_filters, consumer_filters_receiver) = watch::channel(consumer_filters);
         self.consumer_filters = Some(consumer_filters);
+        self.consumer_filters_receiver = Some(consumer_filters_receiver);
         self
+    }
+
+    /// Obtain the means to send filters dynamically. There can be
+    /// only one sender, so calls subsequent to the first one will
+    /// result in [None] being returned. Additionally, [None] is returned
+    /// if no initial filters are declared.
+    pub fn consumer_filters(&mut self) -> Option<watch::Sender<Vec<FilterCriteria>>> {
+        self.consumer_filters.take()
     }
 }
 
@@ -131,7 +150,7 @@ where
                         }
                     });
 
-                    let stream_consumer_filters = self.consumer_filters.as_ref().cloned();
+                    let stream_consumer_filters = self.consumer_filters_receiver.as_ref().cloned();
 
                     let consumer_filters = stream! {
                         if let Some(mut consumer_filters) = stream_consumer_filters {
@@ -160,7 +179,7 @@ where
                                 slice_min: self.slice_range.start as i32,
                                 slice_max: self.slice_range.end as i32 - 1,
                                 offset,
-                                filter: self.consumer_filters.as_ref().map_or(
+                                filter: self.consumer_filters_receiver.as_ref().map_or(
                                     vec![],
                                     |consumer_filters| {
                                         consumer_filters
@@ -446,21 +465,21 @@ mod tests {
                 .unwrap();
         });
 
-        let (consumer_filters, consumer_filters_receiver) =
-            watch::channel(vec![FilterCriteria::IncludeEntityIds {
-                entity_id_offsets: vec![EntityIdOffset {
-                    entity_id: persistence_id.entity_id.clone(),
-                    seq_nr: 0,
-                }],
-            }]);
+        let initial_consumer_filters = vec![FilterCriteria::IncludeEntityIds {
+            entity_id_offsets: vec![EntityIdOffset {
+                entity_id: persistence_id.entity_id.clone(),
+                seq_nr: 0,
+            }],
+        }];
 
         let channel = Channel::from_static("http://127.0.0.1:50051");
-        let source_provider = GrpcSourceProvider::<u32, _>::new(
+        let mut source_provider = GrpcSourceProvider::<u32, _>::new(
             || channel.connect(),
             StreamId::from("some-string-id"),
         )
-        .with_consumer_filters(consumer_filters_receiver);
+        .with_initial_consumer_filters(initial_consumer_filters);
 
+        let consumer_filters = source_provider.consumer_filters().unwrap();
         assert!(consumer_filters
             .send(vec![consumer_filter::exclude_all()])
             .is_ok());
