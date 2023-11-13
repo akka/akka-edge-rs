@@ -185,24 +185,39 @@ type Context<E> = (Envelope<E>, oneshot::Sender<()>);
 /// a reliable stream event envelopes to a consumer. Event envelope transmission
 /// requests are sent over a channel and have a reply that is completed on the
 /// remote consumer's acknowledgement of receipt.
+///
+/// The `max_in_flight` parameter determines the maximum number of events that
+/// we can go unacknowledged at any time. Meeting this threshold will back-pressure the
+/// production of events.
+#[allow(clippy::type_complexity)]
 pub fn task<E, EC, ECR>(
     event_consumer_channel: EC,
     origin_id: StreamId,
     stream_id: StreamId,
-    consumer_filters: watch::Sender<Vec<FilterCriteria>>,
-    mut envelopes: mpsc::Receiver<(Envelope<E>, oneshot::Sender<()>)>,
-) -> (impl Future<Output = ()>, oneshot::Sender<()>)
+    max_in_flight: usize,
+) -> (
+    impl Future<Output = ()>,
+    mpsc::Sender<(Envelope<E>, oneshot::Sender<()>)>,
+    watch::Receiver<Vec<FilterCriteria>>,
+    oneshot::Sender<()>,
+)
 where
     E: Clone + Name + 'static,
     EC: Fn() -> ECR + Send + Sync,
     ECR: Future<Output = Result<Channel, tonic::transport::Error>> + Send,
 {
+    let (envelopes, mut envelopes_receiver) =
+        mpsc::channel::<(Envelope<E>, oneshot::Sender<()>)>(max_in_flight);
+
+    let (consumer_filters, consumer_filters_receiver) = watch::channel(vec![]);
+
     let (kill_switch, mut kill_switch_receiver) = oneshot::channel();
 
     let task = async move {
         let mut delayer: Option<Delayer> = None;
 
-        let mut in_flight: HashMap<PersistenceId, VecDeque<Context<E>>> = HashMap::new();
+        let mut in_flight: HashMap<PersistenceId, VecDeque<Context<E>>> =
+            HashMap::with_capacity(max_in_flight);
 
         'outer: loop {
             if let Err(oneshot::error::TryRecvError::Closed) = kill_switch_receiver.try_recv() {
@@ -345,7 +360,7 @@ where
 
                     loop {
                         tokio::select! {
-                            request = envelopes.recv() => {
+                            request = envelopes_receiver.recv() => {
                                 if let Some((envelope, reply_to)) = request {
                                     let contexts = in_flight
                                         .entry(envelope.persistence_id().clone())
@@ -410,7 +425,7 @@ where
         }
     };
 
-    (task, kill_switch)
+    (task, envelopes, consumer_filters_receiver, kill_switch)
 }
 
 #[cfg(test)]
@@ -508,22 +523,19 @@ mod tests {
                 .unwrap();
         });
 
-        let (consumer_filters, mut consumer_filters_receiver) = watch::channel(vec![]);
-        let (sender, receiver) = mpsc::channel(10);
-        let (task, _task_kill_switch) = task(
+        let (task, envelopes, mut consumer_filters_receiver, _task_kill_switch) = task(
             || {
                 let channel = Channel::from_static("http://127.0.0.1:50052");
                 async move { channel.connect().await }
             },
             OriginId::from("some-origin-id"),
             StreamId::from("some-stream-id"),
-            consumer_filters,
-            receiver,
+            10,
         );
         tokio::spawn(task);
 
         let (reply, reply_receiver) = oneshot::channel();
-        assert!(sender
+        assert!(envelopes
             .send((
                 Envelope(Envelopes::Event(EventEnvelope {
                     persistence_id: "entity-type|entity-id".parse().unwrap(),
