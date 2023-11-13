@@ -8,7 +8,6 @@ use akka_persistence_rs::{
 use async_stream::stream;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use log::warn;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{io, marker::PhantomData, pin::Pin, sync::Arc};
 use streambed::{
@@ -358,7 +357,7 @@ where
                                 );
                             }
                             Err(e) => {
-                                warn!("When initially consuming: {e:?}");
+                                panic!("When initially consuming: {e:?}. Having to abort as this is unrecoverable.");
                             }
                         }
                     }
@@ -398,7 +397,7 @@ where
                                     );
                                 }
                                 Err(e) => {
-                                    warn!("When consuming: {e:?}");
+                                    panic!("When consuming: {e:?}. Having to abort as this is unrecoverable.");
                                 }
                             }
                         }
