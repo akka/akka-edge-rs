@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::{cmp::Ordering, sync::Arc};
-use std::{io, num::NonZeroUsize};
+use std::{future::Future, io};
 use streambed::commit_log::{ConsumerRecord, Header, HeaderKey, Key, ProducerRecord, Topic};
 use streambed_logged::{compaction::KeyBasedRetention, FileLog};
 use tokio::sync::{mpsc, oneshot, watch, Notify};
@@ -271,89 +271,98 @@ pub type OffsetStoreId = SmolStr;
 
 use internal::*;
 
-/// Runs an offset store.
-pub async fn run(
+/// Provides an asynchronous task and a command channel that can run and drive an offset store.
+pub fn task(
     mut commit_log: FileLog,
     keys_expected: usize,
     offset_store_id: OffsetStoreId,
-    mut offset_store_receiver: mpsc::Receiver<offset_store::Command>,
-) -> io::Result<()> {
-    let events_entity_type = EntityType::from(offset_store_id.clone());
-    let events_topic = Topic::from(offset_store_id.clone());
+) -> (
+    impl Future<Output = io::Result<()>>,
+    mpsc::Sender<offset_store::Command>,
+) {
+    let (offset_store, mut offset_store_receiver) = mpsc::channel(1);
 
-    let (offset_store_entities, offset_store_entities_receiver) = mpsc::channel(keys_expected);
-    let (last_offset, last_offset_receiver) = watch::channel(None);
-    let ready = Arc::new(Notify::new());
-    let task_ready = ready.clone();
-    let offset_command_handler = async {
-        task_ready.notified().await;
-        task_ready.notify_one();
-        while let Some(command) = offset_store_receiver.recv().await {
-            match command {
-                offset_store::Command::GetLastOffset { reply_to } => {
-                    let _ = reply_to.send(last_offset_receiver.borrow().clone());
-                }
-                offset_store::Command::GetOffset {
-                    persistence_id,
-                    reply_to,
-                } => {
-                    let _ = offset_store_entities
-                        .send(Message::new(
-                            EntityId::from(persistence_id.jdk_string_hash().to_string()),
-                            Command::Get {
-                                persistence_id,
-                                reply_to,
-                            },
-                        ))
-                        .await;
-                }
-                offset_store::Command::SaveOffset {
-                    persistence_id,
-                    offset,
-                } => {
-                    let _ = offset_store_entities
-                        .send(Message::new(
-                            EntityId::from(persistence_id.jdk_string_hash().to_string()),
-                            Command::Save {
-                                persistence_id,
-                                offset,
-                            },
-                        ))
-                        .await;
+    let task = async move {
+        let events_entity_type = EntityType::from(offset_store_id.clone());
+        let events_topic = Topic::from(offset_store_id.clone());
+
+        commit_log
+            .register_compaction(events_topic.clone(), KeyBasedRetention::new(keys_expected))
+            .await
+            .unwrap();
+
+        let to_compaction_key = |_: &EntityId, event: &Event| -> Key {
+            let Event::Saved { persistence_id, .. } = event;
+            persistence_id.jdk_string_hash() as u64
+        };
+
+        let file_log_topic_adapter = CommitLogTopicAdapter::new(
+            commit_log,
+            OffsetStoreEventMarshaller {
+                entity_type: events_entity_type,
+                to_compaction_key,
+            },
+            &offset_store_id,
+            events_topic,
+        );
+
+        let (last_offset, last_offset_receiver) = watch::channel(None);
+        let ready = Arc::new(Notify::new());
+
+        let (entity_manager_runner, offset_store_entities) = entity_manager::task(
+            Behavior {
+                last_offset,
+                ready: ready.clone(),
+            },
+            file_log_topic_adapter,
+            keys_expected,
+            keys_expected,
+        );
+
+        let offset_command_handler = async {
+            ready.notified().await;
+            ready.notify_one();
+            while let Some(command) = offset_store_receiver.recv().await {
+                match command {
+                    offset_store::Command::GetLastOffset { reply_to } => {
+                        let _ = reply_to.send(last_offset_receiver.borrow().clone());
+                    }
+                    offset_store::Command::GetOffset {
+                        persistence_id,
+                        reply_to,
+                    } => {
+                        let _ = offset_store_entities
+                            .send(Message::new(
+                                EntityId::from(persistence_id.jdk_string_hash().to_string()),
+                                Command::Get {
+                                    persistence_id,
+                                    reply_to,
+                                },
+                            ))
+                            .await;
+                    }
+                    offset_store::Command::SaveOffset {
+                        persistence_id,
+                        offset,
+                    } => {
+                        let _ = offset_store_entities
+                            .send(Message::new(
+                                EntityId::from(persistence_id.jdk_string_hash().to_string()),
+                                Command::Save {
+                                    persistence_id,
+                                    offset,
+                                },
+                            ))
+                            .await;
+                    }
                 }
             }
-        }
+        };
+
+        let (_, r2) = tokio::join!(offset_command_handler, entity_manager_runner);
+        r2
     };
-
-    commit_log
-        .register_compaction(events_topic.clone(), KeyBasedRetention::new(keys_expected))
-        .await
-        .unwrap();
-
-    let to_compaction_key = |_: &EntityId, event: &Event| -> Key {
-        let Event::Saved { persistence_id, .. } = event;
-        persistence_id.jdk_string_hash() as u64
-    };
-
-    let file_log_topic_adapter = CommitLogTopicAdapter::new(
-        commit_log,
-        OffsetStoreEventMarshaller {
-            entity_type: events_entity_type,
-            to_compaction_key,
-        },
-        &offset_store_id,
-        events_topic,
-    );
-
-    let entity_manager_runner = entity_manager::run(
-        Behavior { last_offset, ready },
-        file_log_topic_adapter,
-        offset_store_entities_receiver,
-        NonZeroUsize::new(keys_expected).unwrap(),
-    );
-
-    let (_, r2) = tokio::join!(offset_command_handler, entity_manager_runner);
-    r2
+    (task, offset_store)
 }
 
 #[cfg(test)]
@@ -373,16 +382,12 @@ mod tests {
         println!("Writing to {}", logged_dir.to_string_lossy());
 
         let commit_log = FileLog::new(logged_dir);
-        let (offset_store, offset_store_receiver) = mpsc::channel(1);
 
         // Shouldn't be any offsets right now
 
-        tokio::spawn(run(
-            commit_log,
-            10,
-            OffsetStoreId::from("some-offset-id"),
-            offset_store_receiver,
-        ));
+        let (offset_store_task, offset_store) =
+            task(commit_log, 10, OffsetStoreId::from("some-offset-id"));
+        tokio::spawn(offset_store_task);
 
         let (reply_to, reply_to_receiver) = oneshot::channel();
         offset_store

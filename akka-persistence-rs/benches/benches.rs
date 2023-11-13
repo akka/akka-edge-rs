@@ -1,4 +1,4 @@
-use std::{io, num::NonZeroUsize, pin::Pin, sync::Arc};
+use std::{io, pin::Pin, sync::Arc};
 
 use akka_persistence_rs::{
     effect::{persist_event, Effect, EffectExt},
@@ -8,7 +8,7 @@ use akka_persistence_rs::{
 };
 use async_trait::async_trait;
 use criterion::{criterion_group, criterion_main, Criterion};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::Notify;
 use tokio_stream::Stream;
 
 const NUM_EVENTS: usize = 10_000;
@@ -81,16 +81,16 @@ fn criterion_benchmark(c: &mut Criterion) {
             .unwrap();
 
         let events_processed = Arc::new(Notify::new());
-        let (sender, receiver) = mpsc::channel(10);
-        let _ = rt.spawn(entity_manager::run(
+        let (task, sender) = entity_manager::task(
             Behavior,
             Adapter {
                 event_count: 0,
                 events_processed: events_processed.clone(),
             },
-            receiver,
-            NonZeroUsize::new(1).unwrap(),
-        ));
+            10,
+            1,
+        );
+        let _ = rt.spawn(task);
 
         b.to_async(&rt).iter(|| {
             let task_events_processed = events_processed.clone();

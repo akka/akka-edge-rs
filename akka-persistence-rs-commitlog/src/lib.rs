@@ -598,7 +598,7 @@ pub mod cbor {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs, num::NonZeroUsize, time::Duration};
+    use std::{env, fs, time::Duration};
 
     use super::*;
     use akka_persistence_rs::{entity::EventSourcedBehavior, entity_manager};
@@ -606,7 +606,7 @@ mod tests {
     use streambed::commit_log::{Header, HeaderKey};
     use streambed_logged::FileLog;
     use test_log::test;
-    use tokio::{sync::mpsc, time};
+    use tokio::time;
 
     // Scaffolding
 
@@ -831,17 +831,7 @@ mod tests {
             Topic::from("some-topic"),
         );
 
-        let my_behavior = MyBehavior;
-
-        let (_, my_command_receiver) = mpsc::channel(10);
-
-        assert!(entity_manager::run(
-            my_behavior,
-            file_log_topic_adapter,
-            my_command_receiver,
-            NonZeroUsize::new(1).unwrap(),
-        )
-        .await
-        .is_ok());
+        let (entity_manager, _) = entity_manager::task(MyBehavior, file_log_topic_adapter, 10, 1);
+        assert!(entity_manager.await.is_ok());
     }
 }

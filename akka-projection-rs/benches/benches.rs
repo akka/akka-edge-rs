@@ -10,7 +10,7 @@ use akka_projection_rs::{
 use async_stream::stream;
 use async_trait::async_trait;
 use criterion::{criterion_group, criterion_main, Criterion};
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{mpsc, Notify};
 use tokio_stream::Stream;
 
 const NUM_EVENTS: usize = 10_000;
@@ -106,24 +106,18 @@ fn criterion_benchmark(c: &mut Criterion) {
             .unwrap();
 
         let events_processed = Arc::new(Notify::new());
-        let (_registration_projection_command, registration_projection_command_receiver) =
-            oneshot::channel();
+        let (offset_store, mut offset_store_receiver) = mpsc::channel(1);
+        let offset_store_task =
+            async move { while let Some(_) = offset_store_receiver.recv().await {} };
+        let (projection_task, _kill_switch) = consumer::task(
+            offset_store,
+            TestSourceProvider,
+            TestHandler {
+                events_processed: events_processed.clone(),
+            },
+        );
 
-        let task_events_processed = events_processed.clone();
-        let _ = rt.spawn(async move {
-            let (offset_store, mut offset_store_receiver) = mpsc::channel(1);
-            let offset_store_task =
-                async { while let Some(_) = offset_store_receiver.recv().await {} };
-            let projection_task = consumer::run(
-                offset_store,
-                registration_projection_command_receiver,
-                TestSourceProvider,
-                TestHandler {
-                    events_processed: task_events_processed,
-                },
-            );
-            tokio::join!(offset_store_task, projection_task)
-        });
+        let _ = rt.spawn(async move { tokio::join!(offset_store_task, projection_task) });
 
         b.to_async(&rt).iter(|| {
             let task_events_processed = events_processed.clone();
