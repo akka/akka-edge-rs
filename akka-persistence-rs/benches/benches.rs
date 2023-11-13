@@ -1,7 +1,7 @@
 use std::{io, num::NonZeroUsize, pin::Pin, sync::Arc};
 
 use akka_persistence_rs::{
-    effect::{emit_event, Effect, EffectExt},
+    effect::{persist_event, Effect, EffectExt},
     entity::{Context, EventSourcedBehavior},
     entity_manager::{self, EventEnvelope, Handler, SourceProvider},
     EntityId, Message,
@@ -32,7 +32,7 @@ impl EventSourcedBehavior for Behavior {
         _state: &Self::State,
         _command: Self::Command,
     ) -> Box<dyn Effect<Self>> {
-        emit_event(Event).boxed()
+        persist_event(Event).boxed()
     }
 
     fn on_event(_context: &Context, _state: &mut Self::State, _event: Self::Event) {}

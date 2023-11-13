@@ -119,9 +119,10 @@ where
 }
 
 /// Manages the lifecycle of entities given a specific behavior.
-/// Entity managers are established given a source of events associated
+/// Entity managers are established given an adapter of persistent events associated
 /// with an entity type. That source is consumed by subsequently telling
-/// the entity manager to run, generally on its own task.
+/// the entity manager to run, generally on its own task. Events are persisted by
+/// calling on the adapter's handler.
 ///
 /// Commands are sent to a channel established for the entity manager.
 /// Effects may be produced as a result of performing a command, which may,
@@ -224,7 +225,7 @@ where
         }
 
         // Given an entity, send it the command, possibly producing an effect.
-        // Effects may emit events that will update state on success.
+        // Effects may persist events that will update state on success.
 
         let context = Context {
             entity_id: &message.entity_id,
@@ -307,7 +308,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        effect::{emit_deletion_event, emit_event, reply, unhandled, Effect, EffectExt},
+        effect::{persist_deletion_event, persist_event, reply, unhandled, Effect, EffectExt},
         entity::Context,
     };
     use async_trait::async_trait;
@@ -362,11 +363,11 @@ mod tests {
         ) -> Box<dyn Effect<Self>> {
             match command {
                 TempCommand::Register if !state.registered => {
-                    emit_event(TempEvent::Registered).boxed()
+                    persist_event(TempEvent::Registered).boxed()
                 }
 
                 TempCommand::Deregister if state.registered => {
-                    emit_deletion_event(TempEvent::Deregistered).boxed()
+                    persist_deletion_event(TempEvent::Deregistered).boxed()
                 }
 
                 TempCommand::GetTemperature { reply_to } if state.registered => {
@@ -374,7 +375,7 @@ mod tests {
                 }
 
                 TempCommand::UpdateTemperature { temp } if state.registered => {
-                    emit_event(TempEvent::TemperatureUpdated { temp })
+                    persist_event(TempEvent::TemperatureUpdated { temp })
                         .and_then(|behavior: &Self, new_state, prev_result| {
                             let updated = behavior.updated.clone();
                             let temp = new_state.map_or(0, |s| s.temp);
@@ -411,7 +412,7 @@ mod tests {
 
     // The following adapter is not normally created by a developer, but we
     // declare one here so that we can provide a source of events and capture
-    // ones emitted by the entity manager.
+    // ones persisted by the entity manager.
     struct VecEventEnvelopeAdapter {
         initial_events: Option<Vec<EventEnvelope<TempEvent>>>,
         captured_events: mpsc::Sender<EventEnvelope<TempEvent>>,

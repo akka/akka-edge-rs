@@ -94,11 +94,12 @@ where
                     let persistence_id =
                         PersistenceId::new(marshaller.entity_type(), record_entity_id);
                     if self.slice_range.contains(&persistence_id.slice()) {
-                        if let Some(envelope) = marshaller
+                        match marshaller
                             .envelope(persistence_id.entity_id, consumer_record)
                             .await
                         {
-                            yield envelope;
+                            Ok(envelope) => yield envelope,
+                            Err(e) => log::info!("Problem consuming record: {e:?}"),
                         }
                     }
                 }
@@ -143,6 +144,7 @@ mod tests {
 
     use super::*;
     use akka_persistence_rs::{EntityId, EntityType};
+    use akka_persistence_rs_commitlog::{CannotConsume, CannotProduce};
     use chrono::{DateTime, Utc};
     use serde::Deserialize;
     use streambed::commit_log::{ConsumerRecord, Header, Key, ProducerRecord};
@@ -175,7 +177,7 @@ mod tests {
             EntityType::from("some-topic")
         }
 
-        fn to_compaction_key(&self, _entity_id: &EntityId, _event: &MyEvent) -> Option<Key> {
+        fn to_compaction_key(&self, _entity_id: &EntityId, _event: &MyEvent) -> Key {
             panic!("should not be called")
         }
 
@@ -191,17 +193,19 @@ mod tests {
             &self,
             entity_id: EntityId,
             record: ConsumerRecord,
-        ) -> Option<EventEnvelope<MyEvent>> {
-            let value = String::from_utf8(record.value).ok()?;
+        ) -> Result<EventEnvelope<MyEvent>, CannotConsume> {
+            let value = String::from_utf8(record.value)
+                .map_err(|_| CannotConsume::new(entity_id.clone(), "Non numeric entity id"))?;
             let event = MyEvent { value };
-            record.timestamp.map(|timestamp| EventEnvelope {
-                persistence_id: PersistenceId::new(self.entity_type(), entity_id),
+            let envelope = record.timestamp.map(|timestamp| EventEnvelope {
+                persistence_id: PersistenceId::new(self.entity_type(), entity_id.clone()),
                 seq_nr: 1,
                 timestamp,
                 event,
                 offset: 0,
                 tags: vec![],
-            })
+            });
+            envelope.ok_or(CannotConsume::new(entity_id, "No timestamp"))
         }
 
         async fn producer_record(
@@ -211,12 +215,12 @@ mod tests {
             _seq_nr: u64,
             timestamp: DateTime<Utc>,
             event: &MyEvent,
-        ) -> Option<ProducerRecord> {
+        ) -> Result<ProducerRecord, CannotProduce> {
             let headers = vec![Header {
                 key: Topic::from("entity-id"),
                 value: entity_id.as_bytes().into(),
             }];
-            Some(ProducerRecord {
+            Ok(ProducerRecord {
                 topic,
                 headers,
                 timestamp: Some(timestamp),

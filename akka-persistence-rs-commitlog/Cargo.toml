@@ -15,6 +15,7 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 ciborium = { workspace = true, optional = true }
 itoa = { workspace = true }
+log = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 smol_str = { workspace = true }
