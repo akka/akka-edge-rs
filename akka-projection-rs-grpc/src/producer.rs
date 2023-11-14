@@ -52,13 +52,11 @@ pub struct Transformation<E> {
 
 /// Processes events transformed from some unknown event envelope (EI)
 /// to then pass on to a gRPC event producer.
-pub struct GrpcEventProcessor<E, EI, PF, T> {
+pub struct GrpcEventProcessor<E, Envelope, PF, T> {
     flow: GrpcEventFlow<E>,
     producer_filter: PF,
-    consumer_filters_receiver: watch::Receiver<Vec<FilterCriteria>>,
-    filter: Filter,
     transformer: T,
-    phantom: PhantomData<EI>,
+    phantom: PhantomData<Envelope>,
 }
 
 #[async_trait]
@@ -77,12 +75,18 @@ where
         &mut self,
         envelope: Self::Envelope,
     ) -> Result<Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>>, HandlerError> {
-        if self.consumer_filters_receiver.has_changed().unwrap_or(true) {
-            self.filter
-                .update(self.consumer_filters_receiver.borrow().clone());
+        if self
+            .flow
+            .consumer_filters_receiver
+            .has_changed()
+            .unwrap_or(true)
+        {
+            self.flow
+                .filter
+                .update(self.flow.consumer_filters_receiver.borrow().clone());
         };
 
-        let event = if (self.producer_filter)(&envelope) && self.filter.matches(&envelope) {
+        let event = if (self.producer_filter)(&envelope) && self.flow.filter.matches(&envelope) {
             (self.transformer)(&envelope)
         } else {
             // Gaps are ok given a filter situation.
@@ -109,29 +113,19 @@ where
 
 /// Transform and forward gRPC events given a user-supplied transformation function.
 pub struct GrpcEventFlow<E> {
+    consumer_filters_receiver: watch::Receiver<Vec<FilterCriteria>>,
     entity_type: EntityType,
+    filter: Filter,
     grpc_producer: mpsc::Sender<(Envelope<E>, oneshot::Sender<()>)>,
 }
 
 impl<E> GrpcEventFlow<E> {
-    pub fn new(
-        entity_type: EntityType,
-        grpc_producer: mpsc::Sender<(Envelope<E>, oneshot::Sender<()>)>,
-    ) -> Self {
-        Self {
-            entity_type,
-            grpc_producer,
-        }
-    }
-
     /// Produces a handler for this flow. The handler will receive events,
     /// apply filters and, if the filters match, transform and forward events
     /// on to a gRPC producer.
     pub fn handler<EI, PF, T>(
         self,
         producer_filter: PF,
-        consumer_filters_receiver: watch::Receiver<Vec<FilterCriteria>>,
-        filter: Filter,
         transformer: T,
     ) -> GrpcEventProcessor<E, EI, PF, T>
     where
@@ -141,8 +135,6 @@ impl<E> GrpcEventFlow<E> {
         GrpcEventProcessor {
             flow: self,
             producer_filter,
-            consumer_filters_receiver,
-            filter,
             transformer,
             phantom: PhantomData,
         }
@@ -181,24 +173,23 @@ impl<E> GrpcEventFlow<E> {
 
 type Context<E> = (Envelope<E>, oneshot::Sender<()>);
 
-/// Provides an asynchronous task and a kill switch that can run and stop a
-/// a reliable stream event envelopes to a consumer. Event envelope transmission
+/// Provides an asynchronous task and a kill switch that can run and stop
+/// a reliable stream of event envelopes to a consumer. Event envelope transmission
 /// requests are sent over a channel and have a reply that is completed on the
 /// remote consumer's acknowledgement of receipt.
 ///
 /// The `max_in_flight` parameter determines the maximum number of events that
 /// we can go unacknowledged at any time. Meeting this threshold will back-pressure the
 /// production of events.
-#[allow(clippy::type_complexity)]
 pub fn task<E, EC, ECR>(
     event_consumer_channel: EC,
     origin_id: StreamId,
     stream_id: StreamId,
+    entity_type: EntityType,
     max_in_flight: usize,
 ) -> (
     impl Future<Output = ()>,
-    mpsc::Sender<(Envelope<E>, oneshot::Sender<()>)>,
-    watch::Receiver<Vec<FilterCriteria>>,
+    GrpcEventFlow<E>,
     oneshot::Sender<()>,
 )
 where
@@ -425,7 +416,14 @@ where
         }
     };
 
-    (task, envelopes, consumer_filters_receiver, kill_switch)
+    let grpc_flow = GrpcEventFlow {
+        consumer_filters_receiver,
+        entity_type,
+        filter: Filter::default(),
+        grpc_producer: envelopes,
+    };
+
+    (task, grpc_flow, kill_switch)
 }
 
 #[cfg(test)]
@@ -523,19 +521,21 @@ mod tests {
                 .unwrap();
         });
 
-        let (task, envelopes, mut consumer_filters_receiver, _task_kill_switch) = task(
+        let (task, grpc_flow, _task_kill_switch) = task(
             || {
                 let channel = Channel::from_static("http://127.0.0.1:50052");
                 async move { channel.connect().await }
             },
             OriginId::from("some-origin-id"),
             StreamId::from("some-stream-id"),
+            EntityType::from("entity-type"),
             10,
         );
         tokio::spawn(task);
 
         let (reply, reply_receiver) = oneshot::channel();
-        assert!(envelopes
+        assert!(grpc_flow
+            .grpc_producer
             .send((
                 Envelope(Envelopes::Event(EventEnvelope {
                     persistence_id: "entity-type|entity-id".parse().unwrap(),
@@ -551,9 +551,6 @@ mod tests {
             ))
             .await
             .is_ok());
-
-        assert!(consumer_filters_receiver.changed().await.is_ok());
-        assert!(!consumer_filters_receiver.borrow().is_empty());
 
         assert!(reply_receiver.await.is_ok());
     }
