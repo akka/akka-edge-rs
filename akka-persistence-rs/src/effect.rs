@@ -1,16 +1,74 @@
-//! Effects that are lazily performed as a result of performing a command
-//! of an entity. Effects can be chained with other effects and are guaranteed
+//! Effects express how the state of an entity is to be updated, and how various side-effects
+//! can be performed; all in response to an entity's commands. Effects can be chained with other effects and are guaranteed
 //! to be applied (run) before the next command for an entity id is processed.
 //!
-//! Convience methods are providing for commonly chained operations, and take
-//! the form of `and_then` and `then` as the prefix. By Rust convention, `and_then`
+//! Effects are applied
+//! on being returned from a command handler. Command handlers are "pure" and deliberately constrained
+//! from performing side effects. Using effects this way helps us reason the code of a command handler, and facilitate testing
+//! outside of running an entity manager.
+//!
+//! An example as used within a command handler:
+//!
+//! ```no_run
+//! use akka_persistence_rs::effect::{EffectExt, persist_event};
+//!
+//! // ...
+//! # struct SomeEvent;
+//! # let (reply_to, _) = tokio::sync::oneshot::channel();
+//! # let reply_value = 1;
+//! # struct MyBehavior;
+//! # let persist_event = persist_event::<MyBehavior>;
+//! # impl akka_persistence_rs::entity::EventSourcedBehavior for MyBehavior {
+//! # type State = ();
+//! # type Command = ();
+//! # type Event = SomeEvent;
+//! # fn for_command(_: &akka_persistence_rs::entity::Context, _: &Self::State, _: Self::Command) -> Box<dyn akka_persistence_rs::effect::Effect<Self>> {todo!()}
+//! # fn on_event(_: &akka_persistence_rs::entity::Context, _: &mut Self::State, _: Self::Event) {todo!()}
+//! # }
+//!
+//! persist_event(SomeEvent)
+//!     .then_reply(move |_s| Some((reply_to, reply_value)))
+//!     .boxed();
+//! ```
+//!
+//! Convenience methods are provided for commonly chained operations and often provide any state that
+//! has been updated by a previous operation.
+//! These conveniences take the form of `and_then` and `then` as the prefix. By Rust convention, `and_then`
 //! provides the result of the previous operation and expects a result provided
 //! given some closure. Also by convention, `then` is applied only when the previous operation
 //! completed successfully.
 //!
-//! In the case where there is no convenience method, a generalized `and`
-//! operation can be used to chain any effect found here, or a customized
-//! effect.
+//! The [EffectExt::boxed] method is a convenience for "boxing" the chain of effects into a concrete
+//! type that can be returned from a command handler. For more information on boxing, please refer
+//! to [the Rust documentation](https://doc.rust-lang.org/std/boxed/index.html).
+//!
+//! Custom effects may also be provided by implementing the [Effect] and [EffectExt]
+//! traits. See the [Reply] type to illustrate how.
+//!
+//! In the case where there is no convenience method, such as with custom ones, a generalized `and`
+//! operation can be used to chain any effect. Using the previous `then_reply` example:
+//!
+//! ```no_run
+//! use akka_persistence_rs::effect::{EffectExt, reply, persist_event};
+//!
+//! // ...
+//! # struct SomeEvent;
+//! # let (reply_to, _) = tokio::sync::oneshot::channel();
+//! # let reply_value = 1;
+//! # struct MyBehavior;
+//! # let persist_event = persist_event::<MyBehavior>;
+//! # impl akka_persistence_rs::entity::EventSourcedBehavior for MyBehavior {
+//! # type State = ();
+//! # type Command = ();
+//! # type Event = SomeEvent;
+//! # fn for_command(_: &akka_persistence_rs::entity::Context, _: &Self::State, _: Self::Command) -> Box<dyn akka_persistence_rs::effect::Effect<Self>> {todo!()}
+//! # fn on_event(_: &akka_persistence_rs::entity::Context, _: &mut Self::State, _: Self::Event) {todo!()}
+//! # }
+//!
+//! persist_event(SomeEvent)
+//!     .and(reply(reply_to, reply_value))
+//!     .boxed();
+//! ```
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -494,7 +552,7 @@ where
 {
 }
 
-/// The return type of [EffectExt::and_then_reply].
+/// The return type of [EffectExt::then_reply].
 pub struct ThenReply<B, F, R, T> {
     f: Option<F>,
     phantom: PhantomData<(B, R, T)>,

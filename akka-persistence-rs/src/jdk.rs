@@ -4,7 +4,7 @@ use std::{
 };
 
 /// A hasher for hashing strings conformant with
-/// https://docs.oracle.com/javase/8/docs/api/java/lang/String.html#hashCode.
+/// <https://docs.oracle.com/javase/8/docs/api/java/lang/String.html#hashCode.>.
 /// Undefined hash values will be produced if anything but a
 /// Rust [String] is hashed.
 pub struct StringHasher;
