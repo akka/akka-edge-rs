@@ -26,7 +26,7 @@ struct StorableState {
 /// meaning, for multiple runs of a projection, it is possible for events to repeat
 /// from previous runs.
 pub fn task<A, B, Envelope, EE, IH, SP>(
-    offset_store: Option<mpsc::Sender<offset_store::Command>>,
+    offset_store: mpsc::Sender<offset_store::Command>,
     source_provider: SP,
     handler: IH,
 ) -> (impl Future<Output = ()>, oneshot::Sender<()>)
@@ -49,20 +49,13 @@ where
 
         'outer: loop {
             let mut source = source_provider
-                .source(|| {
-                    let offset_store = offset_store.clone();
-                    async {
-                        if let Some(offset_store) = offset_store {
-                            let (reply_to, reply_to_receiver) = oneshot::channel();
-                            offset_store
-                                .send(offset_store::Command::GetLastOffset { reply_to })
-                                .await
-                                .ok()?;
-                            reply_to_receiver.await.ok()?
-                        } else {
-                            None
-                        }
-                    }
+                .source(|| async {
+                    let (reply_to, reply_to_receiver) = oneshot::channel();
+                    offset_store
+                        .send(offset_store::Command::GetLastOffset { reply_to })
+                        .await
+                        .ok()?;
+                    reply_to_receiver.await.ok()?
                 })
                 .await;
 
@@ -82,64 +75,60 @@ where
 
                             // Validate timestamp offsets if we have one.
                             let envelope = if matches!(offset, Offset::Timestamp(_)) {
-                                if let Some(offset_store) = &offset_store {
-                                    // Process the sequence number. If it isn't what we expect then we go round again.
+                                // Process the sequence number. If it isn't what we expect then we go round again.
 
-                                    let seq_nr = envelope.seq_nr();
+                                let seq_nr = envelope.seq_nr();
 
-                                    let (reply_to, reply_to_receiver) = oneshot::channel();
-                                    if offset_store
-                                        .send(offset_store::Command::GetOffset { persistence_id: persistence_id.clone(), reply_to })
-                                        .await
-                                        .is_err()
-                                    {
-                                        warn!("Cannot send to the offset store: {}. Aborting stream.", persistence_id);
-                                        break;
-                                    }
-
-                                    let next_seq_nr = if let Ok(offset) = reply_to_receiver.await {
-                                        if let Some(Offset::Timestamp(TimestampOffset { seq_nr, .. })) = offset {
-                                            seq_nr.wrapping_add(1)
-                                        } else {
-                                            1
-                                        }
-                                    } else {
-                                        warn!("Cannot receive from the offset store: {}. Aborting stream.", persistence_id);
-                                        break
-                                    };
-
-                                    let source = envelope.source();
-
-                                    if seq_nr > next_seq_nr && envelope.source() == Source::Backtrack {
-                                        // This shouldn't happen, if so then abort.
-                                        warn!("Back track received for a future event: {}. Aborting stream.", persistence_id);
-                                        break;
-                                    } else if seq_nr != next_seq_nr {
-                                        // Duplicate or gap
-                                        continue;
-                                    }
-
-                                    // If the sequence number is what we expect and the producer is backtracking, then
-                                    // request its payload. If we can't get its payload then we abort as it is an error.
-
-                                    let resolved_envelope = if source == Source::Backtrack {
-                                        if let Some(event) = source_provider.load_envelope(persistence_id.clone(), seq_nr)
-                                            .await
-                                        {
-                                            Some(event)
-                                        } else {
-                                            warn!("Cannot obtain an backtrack envelope: {}. Aborting stream.", persistence_id);
-                                            None
-                                        }
-                                    } else {
-                                        Some(envelope)
-                                    };
-
-                                    let Some(envelope) = resolved_envelope else { break; };
-                                    envelope
-                                } else {
-                                    envelope
+                                let (reply_to, reply_to_receiver) = oneshot::channel();
+                                if offset_store
+                                    .send(offset_store::Command::GetOffset { persistence_id: persistence_id.clone(), reply_to })
+                                    .await
+                                    .is_err()
+                                {
+                                    warn!("Cannot send to the offset store: {}. Aborting stream.", persistence_id);
+                                    break;
                                 }
+
+                                let next_seq_nr = if let Ok(offset) = reply_to_receiver.await {
+                                    if let Some(Offset::Timestamp(TimestampOffset { seq_nr, .. })) = offset {
+                                        seq_nr.wrapping_add(1)
+                                    } else {
+                                        1
+                                    }
+                                } else {
+                                    warn!("Cannot receive from the offset store: {}. Aborting stream.", persistence_id);
+                                    break
+                                };
+
+                                let source = envelope.source();
+
+                                if seq_nr > next_seq_nr && envelope.source() == Source::Backtrack {
+                                    // This shouldn't happen, if so then abort.
+                                    warn!("Back track received for a future event: {}. Aborting stream.", persistence_id);
+                                    break;
+                                } else if seq_nr != next_seq_nr {
+                                    // Duplicate or gap
+                                    continue;
+                                }
+
+                                // If the sequence number is what we expect and the producer is backtracking, then
+                                // request its payload. If we can't get its payload then we abort as it is an error.
+
+                                let resolved_envelope = if source == Source::Backtrack {
+                                    if let Some(event) = source_provider.load_envelope(persistence_id.clone(), seq_nr)
+                                        .await
+                                    {
+                                        Some(event)
+                                    } else {
+                                        warn!("Cannot obtain an backtrack envelope: {}. Aborting stream.", persistence_id);
+                                        None
+                                    }
+                                } else {
+                                    Some(envelope)
+                                };
+
+                                let Some(envelope) = resolved_envelope else { break; };
+                                envelope
                             } else {
                                 envelope
                             };
@@ -153,14 +142,12 @@ where
                                             break;
                                         }
                                     }
-                                    if let Some(offset_store) = &offset_store {
-                                        if offset_store
-                                            .send(offset_store::Command::SaveOffset { persistence_id, offset })
-                                            .await
-                                            .is_err()
-                                        {
-                                            break;
-                                        }
+                                    if offset_store
+                                        .send(offset_store::Command::SaveOffset { persistence_id, offset })
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
                                     }
                                 }
                                 Handlers::Pending(handler, _) => {
@@ -193,17 +180,13 @@ where
                         active_source = &mut source;
 
                         // If all is well with our pending future so we can finally cause the offset to be persisted.
-                        if pending.is_err() {
-                            break;
-                        }
-
-                        if let Some(offset_store) = &offset_store {
-                            if offset_store
+                        if pending.is_err()
+                            || offset_store
                                 .send(offset_store::Command::SaveOffset { persistence_id, offset })
                                 .await
-                                .is_err() {
-                                    break;
-                                }
+                                .is_err()
+                        {
+                            break;
                         }
                     }
 
@@ -418,7 +401,7 @@ mod tests {
         let (offset_store, mut offset_store_receiver) = mpsc::channel(1);
         let task_persistence_id = persistence_id.clone();
         let (projection_task, _kill_switch) = task(
-            Some(offset_store),
+            offset_store,
             MySourceProvider {
                 persistence_id: task_persistence_id.clone(),
                 event_value: event_value.clone(),
