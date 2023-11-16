@@ -5,12 +5,13 @@ use akka_persistence_rs::{
     WithSource,
 };
 use akka_projection_rs::{
-    consumer, offset_store::LastOffset, Handler, HandlerError, SourceProvider,
+    consumer, offset_store::LastOffset, volatile_offset_store, Handler, HandlerError,
+    SourceProvider,
 };
 use async_stream::stream;
 use async_trait::async_trait;
 use criterion::{criterion_group, criterion_main, Criterion};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::Notify;
 use tokio_stream::Stream;
 
 const NUM_EVENTS: usize = 10_000;
@@ -106,9 +107,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             .unwrap();
 
         let events_processed = Arc::new(Notify::new());
-        let (offset_store, mut offset_store_receiver) = mpsc::channel(1);
-        let offset_store_task =
-            async move { while let Some(_) = offset_store_receiver.recv().await {} };
+        let offset_store = volatile_offset_store::task(1);
         let (projection_task, _kill_switch) = consumer::task(
             offset_store,
             TestSourceProvider,
@@ -117,7 +116,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             },
         );
 
-        let _ = rt.spawn(async move { tokio::join!(offset_store_task, projection_task) });
+        let _ = rt.spawn(projection_task);
 
         b.to_async(&rt).iter(|| {
             let task_events_processed = events_processed.clone();

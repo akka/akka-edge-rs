@@ -10,6 +10,7 @@ use tokio_stream::Stream;
 pub mod consumer;
 pub mod consumer_filter;
 pub mod offset_store;
+pub mod volatile_offset_store;
 
 /// Captures the various types of handlers and the way they are performed.
 pub enum Handlers<A, B>
