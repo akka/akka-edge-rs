@@ -367,11 +367,10 @@ pub fn task(
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs};
-
     use super::*;
 
     use akka_persistence_rs::TimestampOffset;
+    use std::{env, fs};
     use test_log::test;
 
     #[test(tokio::test)]

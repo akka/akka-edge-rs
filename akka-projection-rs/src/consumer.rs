@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 
-use std::{collections::VecDeque, pin::Pin};
+use std::{collections::VecDeque, io, pin::Pin};
 
 use crate::{
     offset_store::{self},
@@ -26,10 +26,13 @@ struct StorableState {
 /// meaning, for multiple runs of a projection, it is possible for events to repeat
 /// from previous runs.
 pub fn task<A, B, Envelope, EE, IH, SP>(
-    offset_store: mpsc::Sender<offset_store::Command>,
+    offset_store: (
+        impl Future<Output = io::Result<()>>,
+        mpsc::Sender<offset_store::Command>,
+    ),
     source_provider: SP,
     handler: IH,
-) -> (impl Future<Output = ()>, oneshot::Sender<()>)
+) -> (impl Future<Output = io::Result<()>>, oneshot::Sender<()>)
 where
     A: Handler<Envelope = EE> + Send,
     B: PendingHandler<Envelope = EE> + Send,
@@ -40,7 +43,9 @@ where
 {
     let (kill_switch, mut kill_switch_receiver) = oneshot::channel();
 
-    let task = async move {
+    let (offset_store_task, offset_store) = offset_store;
+
+    let projection_task = async move {
         let mut handler = handler.into();
 
         let mut always_pending_handler: Pin<
@@ -203,7 +208,12 @@ where
         }
     };
 
-    (task, kill_switch)
+    let combined_task = async {
+        let (_, r) = tokio::join!(projection_task, offset_store_task);
+        r
+    };
+
+    (combined_task, kill_switch)
 }
 
 #[cfg(test)]
@@ -401,7 +411,7 @@ mod tests {
         let (offset_store, mut offset_store_receiver) = mpsc::channel(1);
         let task_persistence_id = persistence_id.clone();
         let (projection_task, _kill_switch) = task(
-            offset_store,
+            (future::pending(), offset_store),
             MySourceProvider {
                 persistence_id: task_persistence_id.clone(),
                 event_value: event_value.clone(),
