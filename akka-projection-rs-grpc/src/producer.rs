@@ -457,7 +457,7 @@ mod tests {
                     Some(proto::consume_event_in::Message::Init(proto::ConsumerEventInit {
                         origin_id,
                         stream_id,
-                        fill_sequence_number_gaps,
+                        fill_sequence_number_gaps: _,
                     })),
             })) = consume_events_in.next().await
             {
