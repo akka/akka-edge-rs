@@ -468,7 +468,8 @@ mod tests {
                                 proto::ConsumerEventStart {
                                     filter: vec![proto::FilterCriteria {
                                         message: Some(proto::filter_criteria::Message::ExcludeEntityIds(proto::ExcludeEntityIds { entity_ids: vec![] })),
-                                    }]
+                                    }],
+                                    replica_info: None,
                                 },
                             )),
                         });
