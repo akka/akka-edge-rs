@@ -246,6 +246,7 @@ where
                             proto::ConsumerEventInit {
                                 origin_id,
                                 stream_id,
+                                fill_sequence_number_gaps: true,
                             },
                         )),
                     };
@@ -311,7 +312,8 @@ where
                             stream_out = stream_outs.next() => match stream_out {
                                 Some(Ok(proto::ConsumeEventOut { message })) =>
                                     match message {
-                                        Some(proto::consume_event_out::Message::Start(proto::ConsumerEventStart { filter })) => {
+                                        Some(proto::consume_event_out::Message::Start(proto::ConsumerEventStart {
+                                            filter, replica_info: None})) => {
                                             debug!("Starting the protocol");
                                             let _ = consumer_filters.send(
                                                 filter
@@ -455,6 +457,7 @@ mod tests {
                     Some(proto::consume_event_in::Message::Init(proto::ConsumerEventInit {
                         origin_id,
                         stream_id,
+                        fill_sequence_number_gaps: _,
                     })),
             })) = consume_events_in.next().await
             {
@@ -465,7 +468,8 @@ mod tests {
                                 proto::ConsumerEventStart {
                                     filter: vec![proto::FilterCriteria {
                                         message: Some(proto::filter_criteria::Message::ExcludeEntityIds(proto::ExcludeEntityIds { entity_ids: vec![] })),
-                                    }]
+                                    }],
+                                    replica_info: None,
                                 },
                             )),
                         });

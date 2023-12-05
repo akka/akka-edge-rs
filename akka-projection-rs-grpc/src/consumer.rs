@@ -190,6 +190,7 @@ where
                                             .collect()
                                     },
                                 ),
+                                replica_info: None,
                             })),
                         }])
                         .chain(consumer_filters),
@@ -257,6 +258,7 @@ where
                     stream_id: self.stream_id.to_string(),
                     persistence_id: persistence_id.to_string(),
                     seq_nr: seq_nr as i64,
+                    replica_info: None,
                 })
                 .await
             {
