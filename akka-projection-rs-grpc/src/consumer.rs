@@ -47,7 +47,7 @@ where
         Self::with_slice_range(
             event_producer_channel,
             stream_id,
-            slice_range.get(0).cloned().unwrap(),
+            slice_range.first().cloned().unwrap(),
         )
     }
 
