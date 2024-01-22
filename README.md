@@ -10,13 +10,13 @@ The Akka Edge guides are found via [akka.io/edge](https://doc.akka.io/docs/akka-
 
 ## Current versions of all Akka libraries
 
-The current versions of all Akka libraries are listed on the [Akka Dependencies](https://doc.akka.io/docs/akka-dependencies/current/) page. Releases of the Akka core libraries in this repository are listed on the [GitHub releases](https://github.com/akka/akka/releases) page.
+The current versions of all Akka libraries are listed on the [Akka Dependencies](https://doc.akka.io/docs/akka-dependencies/current/) page. Releases of the Akka Edge Rust libraries in this repository are listed on the [GitHub releases](https://github.com/akka/akka-edge-rs/releases) page.
 
 Akka Edge Rust is currently [Incubating](https://developer.lightbend.com/docs/introduction/getting-help/support-terminology.html#incubating) and we are eager for your feedback.
 
 ### Minimum supported Rust
 
-[streambed-rs](https://github.com/streambed/streambed-rs) requires a minimum of [Rust](https://www.rust-lang.org/) version 1.70.0 stable (June 2023), but the most recent stable version of Rust is recommended.
+This library requires a minimum of [Rust](https://www.rust-lang.org/) version 1.70.0 stable (June 2023), but the current stable version of Rust is recommended.
 
 ## Akka
 
