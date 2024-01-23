@@ -40,7 +40,7 @@ where
             marshaller,
             consumer_group_name,
             topic,
-            slice_range.get(0).cloned().unwrap(),
+            slice_range.first().cloned().unwrap(),
         )
     }
 
