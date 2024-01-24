@@ -2,7 +2,7 @@
 
 *Extending the power of Akka’s event-driven model to resource-constrained devices.*
 
-Akka Edge support in Rust is designed to empower cloud developers at the edge. Akka Edge brings familiar concepts to developers familiar with Akka when used elsewhere, while simultaneously recognizing the resource constraints present at the edge.
+Akka Edge support in Rust is designed to empower Akka developers at the edge. Akka Edge Rust brings the concepts of Command and Query Responsibility Segregation (CQRS) to developers familiar with Akka Persistence and Projections recognizing the resource constraints present at the edge.
 
 ## Documentation
 
