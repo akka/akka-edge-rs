@@ -30,7 +30,7 @@ The Akka family of projects is managed by teams at [Lightbend](https://lightbend
 
 ## Contributing
 
-Contributions are *very* welcome!
+Contributions to this project are *very* welcome!
 
 If you see an issue that you'd like to see fixed, the best way to make it happen is to help out by submitting a pull request.
 
