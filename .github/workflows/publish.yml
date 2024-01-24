@@ -97,6 +97,9 @@ jobs:
       - name: Create API documentation
         run: cargo doc --no-deps
 
+      - name: Copy index page
+        run: cp docs/index.html target/doc
+
       - name: Publish API documentation (tag)
         if: startsWith(github.event.ref, 'refs/tags/v')
         env:

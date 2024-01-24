@@ -1,0 +1,143 @@
+
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+
+<head>
+    <title>Akka Edge Rust API docs</title>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <meta name="description" content="Akka Edge Rust API docs"/>
+    <script type="text/javascript" src="https://doc.akka.io/docs/akka/current/lib/jquery/jquery.min.js"></script>
+    <script type="text/javascript" src="https://doc.akka.io/docs/akka/current/lib/foundation/dist/js/foundation.min.js"></script>
+    <link rel="stylesheet" type="text/css" href="https://doc.akka.io/docs/akka/current/lib/normalize.css/normalize.css"/>
+    <link rel="stylesheet" type="text/css" href="https://doc.akka.io/docs/akka/current/lib/foundation/dist/css/foundation.min.css"/>
+    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/docsearch.js/2/docsearch.min.css" />
+    <link rel="stylesheet" type="text/css" href="https://doc.akka.io/docs/akka/current/css/icons.css"/>
+    <link rel="stylesheet" type="text/css" href="https://doc.akka.io/docs/akka/current/css/page-8.css"/>
+    <link rel="stylesheet" type="text/css" href="https://doc.akka.io/docs/akka/current/css/banner-2.css"/>
+    <link rel="shortcut icon" href="https://doc.akka.io/docs/akka/current/images/favicon.ico" />
+    <link rel="apple-touch-icon" sizes="180x180" href="https://doc.akka.io/docs/akka/current/images/apple-touch-icon.png"/>
+    <link rel="icon" type="image/png" sizes="32x32" href="https://doc.akka.io/docs/akka/current/images/favicon-32x32.png"/>
+    <link rel="icon" type="image/png" sizes="16x16" href="https://doc.akka.io/docs/akka/current/images/favicon-16x16.png"/>
+    <link rel="manifest" href="https://doc.akka.io/docs/akka/current/images/manifest.json"/>
+    <meta name="msapplication-TileImage" content="https://doc.akka.io/docs/akka/current/images/mstile-150x150.png"/>
+    <meta name="msapplication-TileColor" content="#15a9ce"/>
+    <meta name="theme-color" content="#15a9ce"/>
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+    <!-- OneTrust Cookies Consent Notice (Production Standard, akka.io, en-GB) start -->
+    <script src="https://cdn.cookielaw.org/scripttemplates/otSDKStub.js"  type="text/javascript" charset="UTF-8" data-domain-script="28b912e7-09e9-43d5-91e4-3d1897044004" ></script>
+    <script type="text/javascript">
+function OptanonWrapper() { }
+</script>
+    <!-- OneTrust Cookies Consent Notice (Production Standard, akka.io, en-GB) end -->
+    <!-- Google Tag Manager now loads Google Analytics and any other tracking scripts. GTM also performs respects a users cookie choices-->
+    <script type="text/javascript">
+(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-KBJGH35');
+</script>
+
+</head>
+
+<body id="underlay" data-toggler="nav-open">
+<header class="site-header hide-for-large">
+    <div class="sticky-header clearfix">
+        <a href="https://akka.io"><img class="logo" src="https://doc.akka.io/docs/akka/current/images/akka-logo-reverse.svg"/></a>
+
+        <button class="menu-icon float-right" type="button" data-toggle="underlay overlay"></button>
+    </div>
+    <div id="overlay" class="overlay-nav" data-toggler="nav-open">
+        <header class="nav-header">
+            <div class="nav-header-title">
+                <h1><a href="index.html">Akka Edge Rust API</a></h1>
+            </div>
+            <div class="nav-header-version"></div>
+        </header>
+    </div>
+</header>
+<div class="site-content-wrapper">
+    <aside class="sticky-sidebar show-for-large">
+        <header class="nav-header sticky-sidebar-header">
+            <div class="nav-header-title">
+                <h1><a href="index.html">Akka Edge Rust API</a></h1>
+            </div>
+            <div class="nav-header-version">&nbsp;</div>
+        </header>
+        <nav class="site-nav sticky-sidebar-contents">
+            <div class="nav-toc">
+                <ul>
+                    <li><a href="index.html" class="header">Crates</a></li>
+                </ul>
+            </div>
+        </nav>
+        <footer class="nav-footer sticky-sidebar-footer">
+            <a href="https://akka.io"><img class="logo" src="https://doc.akka.io/docs/akka/current/images/akka-logo-reverse.svg"/></a>
+
+        </footer>
+    </aside>
+    <main class="fixed-shift-for-large expanded row">
+        <section class="site-content small-12 column">
+            <article class="page-content row">
+                <div class="small-12 column" id="docs">
+                    <h1><a class="anchor"><span class="anchor-link"></span></a>Akka Edge Rust API documentation</h1>
+
+                    <h2><a class="anchor"><span class="anchor-link"></span></a>Akka Persistence (Rust)</h2>
+                    <p>Akka Persistence enables stateful entities to persist their state so that it can be recovered when an entity is either restarted, such as after a process crash, by a supervisor or a manual stop-start, and so forth. The key concept behind Akka Persistence is that only the events that are persisted by the entity are stored, not the actual state of it. The events are persisted by appending to storage (nothing is ever mutated) which allows for very high transaction rates and efficient replication. A stateful entity is recovered by replaying the stored events to it, allowing it to rebuild its state.</p>
+                    <p><a href="akka_persistence_rs/">Crate akka_persistence_rs</a></p>
+
+                    <h2><a class="anchor"><span class="anchor-link"></span></a>Akka Projections (Rust)</h2>
+                    <p>In Akka Projections you process a stream of event envelopes from a source to a projected model or external system. Each envelope is associated with an offset representing the position in the stream. This offset is used for resuming the stream from that position when the projection is restarted.</p>
+                    <p><a href="akka_projection_rs/">Crate akka_projection_rs</a></p>
+
+                    <h2><a class="anchor"><span class="anchor-link"></span></a>Akka Projections (Rust) commit log</h2>
+                    <p>Uses streambed’s CommitLog to persist projection offsets.</p>
+                    <p><a href="akka_projection_rs_commitlog/">Crate akka_projection_rs_commitlog</a></p>
+
+                    <h2><a class="anchor"><span class="anchor-link"></span></a>Akka projections with gRPC communication (Rust)</h2>
+                    <p>Sources events over a gRPC connection, using the Akka GRPC protocol.</p>
+                    <p><a href="akka_projection_rs_grpc/">Crate akka_projection_rs_grpc</a></p>
+
+                    <h2><a class="anchor"><span class="anchor-link"></span></a>Akka Persistence (Rust) adapter for Streambed commit logs</h2>
+                    <p>This crate adapts Streambed’s CommitLog and SecretStore traits for the purposes of it being used with Akka Persistence of akka-edge-rs.</p>
+                    <p><a href="akka_persistence_rs_commitlog/">Crate akka_persistence_rs_commitlog</a></p>
+                </div>
+            </article>
+            <footer class="page-footer row clearfix">
+                <img class="akka-icon float-left show-for-medium" src="https://doc.akka.io/docs/akka/current/images/akka-icon.svg" />
+                <section class="copyright">
+                    <p class="legal">
+                        &copy; 2011-2024 <a href="https://www.lightbend.com" target="_blank">Lightbend, Inc.</a> |
+                        <a href="https://www.lightbend.com/legal/licenses" target="_blank">Licenses</a> |
+                        <a href="https://www.lightbend.com/legal/terms" target="_blank">Terms</a> |
+                        <a href="https://www.lightbend.com/legal/privacy" target="_blank">Privacy Policy</a> |
+                        <a href="https://akka.io/cookie/" target="_blank">Cookie Listing</a> |
+                        <a class="optanon-toggle-display">Cookie Settings</a>
+                    </p>
+                </section>
+
+            </footer>
+        </section>
+    </main>
+</div>
+
+<script type="text/javascript" src="https://doc.akka.io/docs/akka/current/js/scrollsneak.js"></script>
+<script type="text/javascript">jQuery(document).foundation();</script>
+<script type="text/javascript" src="https://doc.akka.io/docs/akka/current/js/groups.js"></script>
+<script type="text/javascript" src="https://doc.akka.io/docs/akka/current/js/page.js"></script>
+<script type="text/javascript" src="https://doc.akka.io/docs/akka/current/js/snippets.js"></script>
+<script type="text/javascript" src="https://doc.akka.io/docs/akka/current/js/magellan.js"></script>
+<script type="text/javascript" src="https://doc.akka.io/docs/akka/current/js/metadata-toggle.js"></script>
+<script type="text/javascript" src="https://doc.akka.io/docs/akka/current/js/lbHeader.js"></script>
+
+<style type="text/css">@import "lib/prettify/prettify.css";</style>
+<script type="text/javascript" src="https://doc.akka.io/docs/akka/current/lib/prettify/prettify.js"></script>
+<script type="text/javascript" src="https://doc.akka.io/docs/akka/current/lib/prettify/lang-scala.js"></script>
+<script type="text/javascript">//<![CDATA[
+jQuery(function(){window.prettyPrint && prettyPrint()});
+//]]></script>
+<!-- hook for including project specific javascript into the generated docs -->
+
+</body>
+</html>
