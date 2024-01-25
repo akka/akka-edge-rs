@@ -55,6 +55,6 @@ For minor or major releases:
 ### Afterwards
 
 - [ ] Update version for [Akka module versions](https://doc.akka.io/docs/akka-dependencies/current/) in [akka-dependencies repo](https://github.com/akka/akka-dependencies)
-- [ ] Update [Akka Edge Rust samples](https://github.com/lightbend/akka-projection-temp/tree/main/samples/grpc/iot-service-rs)
+- [ ] Update [Akka Edge Rust samples](https://github.com/lightbend/akka-projection/tree/main/samples/grpc/iot-service-rs)
 - [ ] The [Akka Edge Rust guide](https://doc.akka.io/docs/akka-edge/current/guide-rs.html) is released as part of the [Akka Projections documentation](https://github.com/akka/akka-projection/blob/main/RELEASING.md).
 - Close this issue
