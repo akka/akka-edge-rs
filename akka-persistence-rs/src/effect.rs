@@ -552,6 +552,28 @@ where
 {
 }
 
+/// A side effect to run a function asynchronously and then, if ok,
+/// persist an event. The associated
+/// behavior is available so that communication channels, for
+/// example, can be accessed by the side-effect. Additionally, the
+/// latest state given any previous effect having persisted an event,
+/// or else the state at the outset of the effects being applied,
+/// is also available.
+pub fn persist_event_if<B, F, R>(f: F) -> ThenPersistEvent<B, F, R>
+where
+    B: EventSourcedBehavior + Send + Sync + 'static,
+    B::State: Send + Sync,
+    F: FnOnce(&B, Option<&B::State>, Result) -> R + Send,
+    R: Future<Output = StdResult<Option<B::Event>, Error>> + Send,
+    <B as EventSourcedBehavior>::Event: Send,
+{
+    ThenPersistEvent {
+        deletion_event: false,
+        f: Some(f),
+        phantom: PhantomData,
+    }
+}
+
 /// The return type of [EffectExt::then_reply].
 pub struct ThenReply<B, F, R, T> {
     f: Option<F>,
@@ -783,5 +805,37 @@ mod tests {
             .is_ok());
 
         assert_eq!(reply_to_receiver.await, Ok(reply_value));
+    }
+
+    #[test(tokio::test)]
+    async fn test_persist_event_if() {
+        let entity_id = EntityId::from("entity-id");
+        let expected = EventEnvelope {
+            deletion_event: false,
+            entity_id: entity_id.clone(),
+            seq_nr: 1,
+            event: TestEvent,
+            timestamp: Utc::now(),
+        };
+        let mut handler = TestHandler {
+            expected: expected.clone(),
+        };
+        let mut entity_ops = TestEntityOps {
+            expected_get_entity_id: entity_id.clone(),
+            get_result: TestState,
+            expected_update: expected,
+        };
+
+        assert!(persist_event_if(|_b, _, _| async { Ok(Some(TestEvent)) })
+            .process(
+                &TestBehavior,
+                &mut handler,
+                &mut entity_ops,
+                &entity_id,
+                &mut 0,
+                Ok(()),
+            )
+            .await
+            .is_ok());
     }
 }
