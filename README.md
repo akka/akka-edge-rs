@@ -1,5 +1,7 @@
 # Akka Edge Rust
 
+The Akka family of projects is managed by teams at [Lightbend](https://lightbend.com/) with help from the community.
+
 *Extending the power of Akka’s event-driven model to resource-constrained devices.*
 
 Akka Edge support in Rust is designed to empower Akka developers at the edge. Recognizing the resource constraints present at the edge, Akka Edge Rust enables event-driven solutions for developers familiar with Akka Persistence and Projections.
