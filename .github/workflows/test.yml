@@ -23,6 +23,11 @@ jobs:
       # v4.1.1
       uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
 
+    - name: Setup global resolver
+        run: |
+          chmod +x ./scripts/setup_global_resolver.sh
+          ./scripts/setup_global_resolver.sh
+
     - name: Update Rust
       run: |
         rustup update
